@@ -1,0 +1,25 @@
+{
+  "recipe_key": "tabular_regression_general",
+  "description": "Generic tabular regression with no domain priors and no temporal structure.",
+  "domain": "general",
+  "capability": {
+    "temporal_structure": "none",
+    "leakage_model": "none",
+    "target_type": "continuous",
+    "validation_strategy": "group_kfold",
+    "recommendation_type": "ranked_factors"
+  },
+  "primary_capability": "tabular_regression",
+  "default_success_criterion": {
+    "metric": "rmse",
+    "threshold": 1.0,
+    "direction": "<=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "ridge_baseline",
+    "lgbm_regressor"
+  ],
+  "default_forbidden_patterns": [],
+  "notes": "Threshold should be tuned per-problem; the 1.0 default is a placeholder."
+}

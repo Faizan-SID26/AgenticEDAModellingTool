@@ -1,0 +1,26 @@
+# Pinned dependencies for reproducible installs.
+# Keep in sync with pyproject.toml [project.dependencies].
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.0
+lightgbm==4.4.0
+scipy==1.13.1
+statsmodels==0.14.2
+lifelines==0.28.0
+pydantic==2.7.4
+click==8.1.7
+rich==13.7.1
+datasketch==1.6.5
+pytdigest==0.1.4
+ruptures==1.1.9
+stumpy==1.13.0
+dowhy==0.11.1
+pyarrow==16.1.0
+platformdirs==4.2.2
+joblib==1.4.2
+matplotlib==3.9.0
+# Dev
+pytest==8.2.2
+pytest-cov==5.0.0
+pre-commit==3.7.1
+ruff==0.4.10

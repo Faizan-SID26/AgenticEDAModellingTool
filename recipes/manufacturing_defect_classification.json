@@ -1,0 +1,35 @@
+{
+  "recipe_key": "manufacturing_defect_classification",
+  "description": "Predict downstream defect from upstream/midstream process signals on a process line with regime structure.",
+  "domain": "manufacturing",
+  "capability": {
+    "temporal_structure": "regime_based",
+    "leakage_model": "stage_frontier",
+    "target_type": "binary",
+    "validation_strategy": "time_split",
+    "recommendation_type": "decision"
+  },
+  "primary_capability": "temporal_classification",
+  "default_success_criterion": {
+    "metric": "roc_auc",
+    "threshold": 0.78,
+    "direction": ">=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "regime_specific_submodel",
+    "stage_frontier_baseline",
+    "lag_join_with_immediate_prior",
+    "interaction_temp_pressure"
+  ],
+  "default_forbidden_patterns": [
+    "qc_",
+    "audit_",
+    "inspector_",
+    "downstream_",
+    "release_",
+    "lab_result_",
+    "post_"
+  ],
+  "notes": "v1 reference recipe. Validated end-to-end on synthetic data."
+}

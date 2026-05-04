@@ -1,0 +1,30 @@
+{
+  "recipe_key": "manufacturing_yield_regression",
+  "description": "Predict continuous yield from process signals.",
+  "domain": "manufacturing",
+  "capability": {
+    "temporal_structure": "regime_based",
+    "leakage_model": "stage_frontier",
+    "target_type": "continuous",
+    "validation_strategy": "time_split",
+    "recommendation_type": "ranked_factors"
+  },
+  "primary_capability": "tabular_regression",
+  "default_success_criterion": {
+    "metric": "rmse",
+    "threshold": 0.05,
+    "direction": "<=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "ridge_baseline",
+    "lgbm_regressor",
+    "regime_specific_submodel"
+  ],
+  "default_forbidden_patterns": [
+    "qc_",
+    "downstream_",
+    "release_"
+  ],
+  "notes": "Yield is continuous in [0,1]. Use rmse on the validation split."
+}

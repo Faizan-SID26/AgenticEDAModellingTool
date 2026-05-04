@@ -1,0 +1,22 @@
+{
+  "mcp_servers": [
+    {
+      "name": "eda-sketch",
+      "command": ["python", "-m", "mcp_servers.sketch_server"],
+      "description": "Read+update tool surface for the Process Data Sketch.",
+      "transport": "stdio"
+    },
+    {
+      "name": "eda-retrieval",
+      "command": ["python", "-m", "mcp_servers.retrieval_server"],
+      "description": "Cross-project retrieval over knowledge/.",
+      "transport": "stdio"
+    },
+    {
+      "name": "eda-budget",
+      "command": ["python", "-m", "mcp_servers.budget_server"],
+      "description": "Budget ledger access.",
+      "transport": "stdio"
+    }
+  ]
+}

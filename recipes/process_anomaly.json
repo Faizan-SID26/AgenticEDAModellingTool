@@ -1,0 +1,28 @@
+{
+  "recipe_key": "process_anomaly",
+  "description": "Unsupervised anomaly detection on process telemetry to flag deviations from nominal operation.",
+  "domain": "manufacturing",
+  "capability": {
+    "temporal_structure": "none",
+    "leakage_model": "none",
+    "target_type": "outlier_score",
+    "validation_strategy": "stratified",
+    "recommendation_type": "alert_policy"
+  },
+  "primary_capability": "anomaly_detection",
+  "default_success_criterion": {
+    "metric": "average_precision",
+    "threshold": 0.4,
+    "direction": ">=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "isolation_forest_baseline",
+    "robust_pca_residual"
+  ],
+  "default_forbidden_patterns": [
+    "labeled_anomaly_",
+    "post_event_"
+  ],
+  "notes": "If labels are partially available, target_column should be the label and the recipe still works (semi-supervised PR-AUC)."
+}

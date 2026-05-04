@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+"""Top-level CLI shim. Delegates to lib.cli:main."""
+from __future__ import annotations
+
+import sys
+
+
+def _run() -> int:
+    from lib.cli import main
+
+    main(args=sys.argv[1:], standalone_mode=False)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_run())

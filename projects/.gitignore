@@ -1,0 +1,10 @@
+# Per-project regenerable artifacts. Top-level .gitignore keeps the
+# committed bits (PROJECT.json, MISSION.json, memory/, experiment_log.jsonl,
+# budget.jsonl, sketch/manifest.json, sketch/annotations/, results/
+# synthesis_*.md and FINAL.md) tracked.
+**/data/
+**/sketch/L*.bin
+**/sketch/L*.parquet
+**/sketch/raw_joined.parquet
+**/results/iter_*/
+**/results/plots/

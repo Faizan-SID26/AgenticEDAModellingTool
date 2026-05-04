@@ -1,0 +1,29 @@
+{
+  "recipe_key": "demand_forecasting",
+  "description": "Multi-horizon demand forecasting with calendar/price/inventory features.",
+  "domain": "forecasting_demand",
+  "capability": {
+    "temporal_structure": "seasonal",
+    "leakage_model": "forecast_horizon",
+    "target_type": "multi_horizon",
+    "validation_strategy": "rolling_origin",
+    "recommendation_type": "forecast"
+  },
+  "primary_capability": "forecasting",
+  "default_success_criterion": {
+    "metric": "mape",
+    "threshold": 0.15,
+    "direction": "<=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "naive_seasonal_baseline",
+    "lagged_ridge",
+    "stl_decompose_then_residual_model"
+  ],
+  "default_forbidden_patterns": [
+    "future_",
+    "actuals_t_plus"
+  ],
+  "notes": "Default horizon: 7 periods. Adjust forecast_horizon if needed."
+}

@@ -1,0 +1,180 @@
+"""Feature DSL expansion.
+
+Plan dicts express features as a list of tokens. Tokens are:
+
+- `+all_allowed` — expanded to MISSION.allowed_columns or "everything not
+  in MISSION.forbidden_columns".
+- `+lag_downstream` — for manufacturing: include lagged values of
+  immediately-downstream-of-target columns honoring the lag-join policy.
+- `engineered:<GROUP>` — looked up in the engineered-feature catalog
+  (interactions_top5, ratios, polynomial_2, ...).
+- `sketch:top3_univariate` — pick the top-3 numeric columns by L2 mutual
+  info.
+- bare column name — used verbatim.
+
+`expand_features(...)` returns the *concrete* column list a model will
+see, with engineered columns materialized in the returned DataFrame.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+
+from lib.schemas.mission import Mission
+
+_log = logging.getLogger("eda.features")
+
+
+def _resolve_all_allowed(mission: Mission, df_columns: Iterable[str]) -> list[str]:
+    if mission.allowed_columns:
+        return list(mission.allowed_columns)
+    forbidden = set(mission.forbidden_columns)
+    forbidden.add(mission.target_column)
+    if mission.time_column:
+        forbidden.add(mission.time_column)
+    if mission.group_column:
+        forbidden.add(mission.group_column)
+    return [c for c in df_columns if c not in forbidden]
+
+
+def _add_top_interactions(df: pd.DataFrame, top_pairs: list[tuple[str, str]]) -> tuple[pd.DataFrame, list[str]]:
+    """Materialize engineered interaction features.
+
+    For numeric pairs: produce the product column. For mixed pairs: skip.
+    """
+    new_cols: list[str] = []
+    out = df.copy()
+    for a, b in top_pairs:
+        if a not in out.columns or b not in out.columns:
+            continue
+        if not pd.api.types.is_numeric_dtype(out[a]) or not pd.api.types.is_numeric_dtype(out[b]):
+            continue
+        name = f"X__{a}_x_{b}"
+        out[name] = out[a] * out[b]
+        new_cols.append(name)
+    return out, new_cols
+
+
+def _engineered_group(
+    df: pd.DataFrame,
+    group: str,
+    *,
+    sketch_top_interactions: list[dict] | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Materialize an engineered-group's columns. Returns (df_with_new, new_col_names)."""
+    if group == "interactions_top5":
+        pairs: list[tuple[str, str]] = []
+        for it in (sketch_top_interactions or [])[:5]:
+            pairs.append((it.get("col_a"), it.get("col_b")))
+        return _add_top_interactions(df, pairs)
+    if group == "ratios":
+        # Ratios between every pair of positive numeric columns. Bounded.
+        num = df.select_dtypes(include=[np.number]).columns.tolist()[:6]
+        out = df.copy()
+        new_cols: list[str] = []
+        for i, a in enumerate(num):
+            for b in num[i + 1 :]:
+                col = f"X__{a}_div_{b}"
+                denom = out[b].replace(0, np.nan)
+                out[col] = out[a] / denom
+                new_cols.append(col)
+        return out, new_cols
+    if group == "polynomial_2":
+        num = df.select_dtypes(include=[np.number]).columns.tolist()[:6]
+        out = df.copy()
+        new_cols: list[str] = []
+        for c in num:
+            col = f"X__{c}_sq"
+            out[col] = out[c] ** 2
+            new_cols.append(col)
+        return out, new_cols
+    if group.startswith("lag_"):
+        try:
+            lag = int(group.split("_", 1)[1])
+        except ValueError:
+            lag = 1
+        num = df.select_dtypes(include=[np.number]).columns.tolist()[:6]
+        out = df.copy()
+        new_cols = []
+        for c in num:
+            name = f"X__{c}_lag{lag}"
+            out[name] = out[c].shift(lag)
+            new_cols.append(name)
+        return out, new_cols
+    _log.warning("unknown engineered group: %s", group)
+    return df, []
+
+
+def _sketch_top3_univariate(top_interactions: list[dict] | None) -> list[str]:
+    cols: list[str] = []
+    seen: set[str] = set()
+    for it in (top_interactions or []):
+        for k in ("col_a", "col_b"):
+            v = it.get(k)
+            if v and v not in seen:
+                cols.append(v)
+                seen.add(v)
+            if len(cols) >= 3:
+                break
+        if len(cols) >= 3:
+            break
+    return cols
+
+
+def expand_features(
+    df: pd.DataFrame,
+    feature_dsl: list[str],
+    mission: Mission,
+    *,
+    sketch_top_interactions: list[dict] | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Expand `feature_dsl` against `df`+MISSION+sketch context.
+
+    Returns (augmented_df, concrete_feature_columns).
+    """
+    out = df
+    concrete: list[str] = []
+
+    for tok in feature_dsl:
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok == "+all_allowed":
+            concrete.extend(_resolve_all_allowed(mission, df.columns))
+            continue
+        if tok == "+lag_downstream":
+            # Manufacturing-style: skip silently if no time column or no
+            # candidate downstream columns; the audit gate will catch real
+            # leakage. v1 stub: no-op (downstream lagging requires raw
+            # multi-table state).
+            continue
+        if tok == "+leak_canary":
+            # The leakage probe deliberately includes one forbidden column.
+            if mission.forbidden_columns:
+                concrete.append(mission.forbidden_columns[0])
+            continue
+        if tok.startswith("engineered:"):
+            group = tok.split(":", 1)[1]
+            out, new = _engineered_group(out, group, sketch_top_interactions=sketch_top_interactions)
+            concrete.extend(new)
+            continue
+        if tok.startswith("sketch:"):
+            sub = tok.split(":", 1)[1]
+            if sub == "top3_univariate":
+                concrete.extend(_sketch_top3_univariate(sketch_top_interactions))
+            continue
+        # Bare column.
+        concrete.append(tok)
+
+    # Dedupe preserving order.
+    seen: set[str] = set()
+    final: list[str] = []
+    for c in concrete:
+        if c not in seen and c in out.columns:
+            final.append(c)
+            seen.add(c)
+    return out, final

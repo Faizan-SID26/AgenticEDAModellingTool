@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eda-framework"
+version = "0.1.0"
+description = "Claude-Code-native EDA + modeling framework with cross-project organizational learning"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "EDA Framework Team" }]
+keywords = ["eda", "ml", "automl", "claude", "agentic", "data-sketch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "pandas==2.2.2",
+    "numpy==1.26.4",
+    "scikit-learn==1.5.0",
+    "lightgbm==4.4.0",
+    "scipy==1.13.1",
+    "statsmodels==0.14.2",
+    "lifelines==0.28.0",
+    "pydantic==2.7.4",
+    "click==8.1.7",
+    "rich==13.7.1",
+    "datasketch==1.6.5",
+    "pytdigest==0.1.4",
+    "ruptures==1.1.9",
+    "stumpy==1.13.0",
+    "dowhy==0.11.1",
+    "pyarrow==16.1.0",
+    "tomli==2.0.1; python_version < '3.11'",
+    "platformdirs==4.2.2",
+    "joblib==1.4.2",
+    "matplotlib==3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.2.2",
+    "pytest-cov==5.0.0",
+    "pre-commit==3.7.1",
+    "ruff==0.4.10",
+]
+mcp = [
+    "mcp==1.0.0",
+]
+
+[project.scripts]
+eda = "lib.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lib*", "mcp_servers*", "seeds*", "recipes*", "tools*"]
+exclude = ["tests*", "projects*", "knowledge*", "docs*"]
+
+[tool.setuptools.package-data]
+"recipes" = ["*.json"]
+"seeds" = ["*.jsonl"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "requires_agent: integration test that requires a live Claude agent (skipped by default)",
+    "slow: long-running test",
+]
+addopts = "-q --strict-markers"

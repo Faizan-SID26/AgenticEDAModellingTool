@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.tox/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Per-project regenerable artifacts (still tracked: PROJECT.json, MISSION.json, memory/, sketch/manifest.json,
+# sketch/annotations/, results/synthesis_*.md, results/FINAL.md, experiment_log.jsonl).
+projects/**/data/
+projects/**/sketch/L*.bin
+projects/**/sketch/L*.parquet
+projects/**/sketch/raw_joined.parquet
+projects/**/results/iter_*/
+projects/**/results/plots/
+projects/**/__pycache__/
+
+# Knowledge index DB (regenerable from JSONL)
+knowledge/sketch_index.db
+
+# Logs
+*.log
+logs/

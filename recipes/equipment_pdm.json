@@ -1,0 +1,30 @@
+{
+  "recipe_key": "equipment_pdm",
+  "description": "Predictive maintenance: time-to-failure for individual equipment units.",
+  "domain": "manufacturing",
+  "capability": {
+    "temporal_structure": "regime_based",
+    "leakage_model": "forecast_horizon",
+    "target_type": "time_to_event",
+    "validation_strategy": "group_kfold",
+    "recommendation_type": "alert_policy"
+  },
+  "primary_capability": "predictive_maintenance",
+  "default_success_criterion": {
+    "metric": "concordance_index",
+    "threshold": 0.7,
+    "direction": ">=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "cox_baseline",
+    "regime_specific_hazard",
+    "leading_indicator_features"
+  ],
+  "default_forbidden_patterns": [
+    "post_failure_",
+    "repair_log_",
+    "downstream_qc"
+  ],
+  "notes": "Group column should identify the equipment unit (e.g., asset_id)."
+}

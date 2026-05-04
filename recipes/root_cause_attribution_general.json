@@ -1,0 +1,26 @@
+{
+  "recipe_key": "root_cause_attribution_general",
+  "description": "Given a known defect column, rank candidate features by attributed contribution.",
+  "domain": "general",
+  "capability": {
+    "temporal_structure": "none",
+    "leakage_model": "none",
+    "target_type": "rank",
+    "validation_strategy": "stratified",
+    "recommendation_type": "ranked_factors"
+  },
+  "primary_capability": "root_cause_attribution",
+  "default_success_criterion": {
+    "metric": "ndcg_at_10",
+    "threshold": 0.6,
+    "direction": ">=",
+    "on_split": "validation"
+  },
+  "default_seed_hypotheses": [
+    "marginal_lift_per_feature",
+    "shapley_global",
+    "causal_neighbors_only"
+  ],
+  "default_forbidden_patterns": [],
+  "notes": "Validation here measures stability of the rank (NDCG against bootstrap)."
+}
