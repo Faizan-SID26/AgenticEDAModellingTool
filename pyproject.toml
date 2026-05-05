@@ -9,7 +9,7 @@ description = "Claude-Code-native EDA + modeling framework with cross-project or
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
-authors = [{ name = "EDA Framework Team" }]
+authors = [{ name = "Data Science Team" }]
 keywords = ["eda", "ml", "automl", "claude", "agentic", "data-sketch"]
 classifiers = [
     "Development Status :: 3 - Alpha",
