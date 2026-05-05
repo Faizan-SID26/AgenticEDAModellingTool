@@ -293,10 +293,24 @@ class TerminationVerdict:
     reasons: list[str] = field(default_factory=list)
 
 
+_MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION = 4
+"""Anti-premature-convergence guard: stagnation alone never halts /run
+until the project has actually tried at least this many distinct
+technique families. The intent is to force the researcher to *explore*
+before declaring 'no further improvement possible'."""
+
+
 def termination_check(project_dir: Path, mission: Mission) -> TerminationVerdict:
-    """Evaluate every stop condition and return the verdict."""
+    """Evaluate every stop condition and return the verdict.
+
+    Stagnation is suppressed when the project has not yet tried at least
+    `_MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION` distinct technique
+    families: 'we tried 3 boosted-tree configs and gave up' is not a
+    valid project end state.
+    """
     state = load_run_state(project_dir)
     reasons: list[str] = []
+    exps = read_experiments(project_dir)
 
     # Goal met.
     sc = mission.success_criterion
@@ -311,16 +325,27 @@ def termination_check(project_dir: Path, mission: Mission) -> TerminationVerdict
     if frac >= 1.0:
         reasons.append("budget_exhausted")
 
-    # Stagnation.
+    # Stagnation — only fires if we've actually explored.
     if state.iterations_since_improvement >= mission.budget.stagnation_window:
-        reasons.append("stagnation")
+        distinct_families = {
+            e.technique_family for e in exps if e.skeptic.verdict != "FAIL"
+        }
+        if len(distinct_families) >= _MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION:
+            reasons.append("stagnation")
+        else:
+            # Otherwise, this is *premature* stagnation. Don't halt.
+            # The orchestrator should escalate to wildcard / SOTA hypotheses.
+            _log.info(
+                "stagnation suppressed: only %d distinct families tried (min %d required)",
+                len(distinct_families),
+                _MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION,
+            )
 
     # Iteration cap.
     if state.current_iteration >= mission.budget.iteration_cap:
         reasons.append("iteration_cap")
 
     # Catastrophic skeptic failure: same FAIL skeptic key in the trailing N experiments.
-    exps = read_experiments(project_dir)
     n_window = mission.budget.catastrophic_failure_window
     if len(exps) >= n_window:
         recent_fails = [e.skeptic.failed_checks for e in exps[-n_window:] if e.skeptic.verdict == "FAIL"]

@@ -1,14 +1,17 @@
-"""`/init` implementation: profile data files and propose joins.
+"""`/init` implementation: profile data files, read domain documents,
+propose joins.
 
 Pure inspection. No questions asked. Reads every file under
-`<project>/data/` (csv, parquet, jsonl), records dtypes, missingness,
-likely time / target / id columns, and proposes joins between tables that
-share keys. Writes:
+`<project>/data/` (csv, parquet, jsonl) and profiles columns, then
+*also* reads supported domain documents (md/txt/pdf/docx/rtf) and
+extracts their text. Writes:
 
-    memory/INIT_PROFILE.json
-    results/init_report.md
+    memory/INIT_PROFILE.json     — column profile + proposed joins
+    memory/DOMAIN_DOCS.md        — extracted text from PUDs/specs/SOPs
+    results/init_report.md       — human-readable summary
 
-The agent (planner role) consumes both files at /plan time.
+The agent (planner role) consumes all three at /plan time so it can
+ask precise, process-aware questions instead of generic ones.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from typing import Any
 import pandas as pd
 
 from lib import __version__
+from lib.documents import collect as collect_documents, write_domain_docs
 
 _log = logging.getLogger("eda.inspect")
 
@@ -212,6 +216,20 @@ def inspect_project(
 
     proposed_joins = _propose_joins(file_summaries)
 
+    # Collect domain documents (PUDs, specs, SOPs, prior investigations)
+    # so /plan can build process-aware questions instead of generic ones.
+    corpus = collect_documents(data_dir)
+    docs_summary = [
+        {
+            "path": d.path,
+            "suffix": d.suffix,
+            "n_chars": d.n_chars,
+            "truncated": d.truncated,
+            "error": d.error,
+        }
+        for d in corpus.documents
+    ]
+
     profile: dict[str, Any] = {
         "schema_version": "1",
         "framework_version": __version__,
@@ -219,6 +237,10 @@ def inspect_project(
         "n_files": len(file_summaries),
         "files": file_summaries,
         "proposed_joins": proposed_joins,
+        "domain_documents": docs_summary,
+        "domain_documents_parser_warnings": list(corpus.parser_warnings),
+        "n_domain_documents": len(corpus.documents),
+        "n_domain_documents_with_text": sum(1 for d in corpus.documents if d.text),
     }
 
     if write:
@@ -227,6 +249,9 @@ def inspect_project(
         (memdir / "INIT_PROFILE.json").write_text(
             json.dumps(profile, indent=2, default=str), encoding="utf-8"
         )
+        # memory/DOMAIN_DOCS.md (only if there were any documents).
+        write_domain_docs(project_dir, corpus)
+
         results_dir = project_dir / "results"
         results_dir.mkdir(parents=True, exist_ok=True)
         (results_dir / "init_report.md").write_text(
@@ -270,4 +295,29 @@ def _render_report_md(profile: dict[str, Any]) -> str:
                 f"- {jp['left_table']} ⨝ {jp['right_table']} on `{jp['on']}` ({jp['how']})"
             )
             lines.append(f"  - rationale: {jp['rationale']}")
+    docs = profile.get("domain_documents") or []
+    if docs:
+        lines.append(f"\n## Domain documents ({len(docs)})\n")
+        for d in docs:
+            chars = d.get("n_chars", 0)
+            err = d.get("error")
+            note = f" (parse error: `{err}`)" if err else ""
+            trunc = " (truncated)" if d.get("truncated") else ""
+            lines.append(f"- `{d.get('path')}` — {d.get('suffix')} — {chars} chars{trunc}{note}")
+        warns = profile.get("domain_documents_parser_warnings") or []
+        if warns:
+            lines.append("")
+            lines.append("Parser warnings (install the named extra to read these):")
+            for w in warns:
+                lines.append(f"- `{w}`")
+        lines.append(
+            "\n_Extracted text is in `memory/DOMAIN_DOCS.md`. The planner reads it before asking questions._"
+        )
+    else:
+        lines.append("\n## Domain documents\n")
+        lines.append(
+            "_No supported documents in `data/`. Drop a `.md`, `.txt`, `.pdf`, "
+            "`.docx`, or `.rtf` file (PUD / spec / SOP / prior investigation) "
+            "and re-run `/init` to give the planner domain context._"
+        )
     return "\n".join(lines) + "\n"

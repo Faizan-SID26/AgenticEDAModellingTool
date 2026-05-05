@@ -1,10 +1,12 @@
 ---
-description: Autonomous bootstrap → iterate → synthesize → finalize. Terminates only on goal-met, budget-exhausted, stagnation, catastrophic skeptic failure, iteration cap, or user interrupt.
+description: Autonomous bootstrap → iterate → synthesize → finalize. Exploratory by default, web-search-enabled. Terminates only on goal-met, budget-exhausted, stagnation (after sufficient exploration), catastrophic skeptic failure, iteration cap, or user interrupt.
 allowed-tools:
   - Read
   - Bash(python:*)
   - Agent
   - AskUserQuestion
+  - WebSearch
+  - WebFetch
 ---
 
 # /run — autonomous execution
