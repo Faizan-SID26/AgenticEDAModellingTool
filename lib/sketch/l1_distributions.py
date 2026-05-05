@@ -1,10 +1,11 @@
 """L1: per-column distribution summary.
 
 Implementation notes:
-- Quantiles: exact via numpy on the build-time sample (the source dataset
-  is loaded once at /bootstrap; nothing about quantile recomputation runs
-  per-iteration). The schema field `quantiles` is the percentile→value
-  dump; `t-digest accuracy` semantics are not visible to the agent.
+- Quantiles: exact via `numpy.quantile` on the build-time sample. The
+  source dataset is loaded once at /bootstrap; nothing about quantile
+  recomputation runs per-iteration, so an exact one-pass computation is
+  cheaper and simpler than a streaming digest. The schema field
+  `quantiles` is the percentile→value dump.
 - Cardinality: HyperLogLog via `datasketch` if available; otherwise an
   exact unique count is recorded with a flag.
 - Top categories: pandas `value_counts` head-K.

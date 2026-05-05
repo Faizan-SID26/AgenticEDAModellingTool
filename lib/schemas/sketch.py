@@ -25,8 +25,9 @@ from lib.schemas._base import VersionedModel
 class L1ColumnSummary(VersionedModel):
     """Distribution summary for a single column.
 
-    Backed by a t-digest (quantiles), count-min sketch (frequencies), and a
-    HyperLogLog (cardinality estimate).
+    Quantiles are computed exactly via `numpy.quantile` at build time.
+    Cardinality is estimated via HyperLogLog (`datasketch`) when available,
+    or an exact unique count otherwise.
     """
 
     column: str = Field(...)
@@ -38,7 +39,7 @@ class L1ColumnSummary(VersionedModel):
     quantiles: dict[str, float] = Field(
         default_factory=dict,
         description=(
-            "t-digest quantile dump; keys are string-formatted percentiles "
+            "Percentile→value dump; keys are string-formatted percentiles "
             "such as '0.01', '0.05', '0.25', '0.5', '0.75', '0.95', '0.99'. "
             "Numeric only."
         ),

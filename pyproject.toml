@@ -31,7 +31,6 @@ dependencies = [
     "click==8.1.7",
     "rich==13.7.1",
     "datasketch==1.6.5",
-    "pytdigest==0.1.4",
     "ruptures==1.1.9",
     "stumpy==1.13.0",
     "dowhy==0.11.1",
