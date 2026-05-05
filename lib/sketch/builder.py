@@ -74,8 +74,17 @@ def build_sketch(
     l1_path = sketch_dir / "L1.json"
     save_l1(l1_summaries, l1_path)
 
-    # L2: joint structure.
-    l2_summary = build_l2(df, target=mission.target_column, k=20, top_k_interactions=10, seed=seed)
+    # L2: joint structure. Forbidden + target are stripped from the
+    # interaction pool so engineered:interactions_top5 cannot ever
+    # materialize a leakage feature.
+    l2_summary = build_l2(
+        df,
+        target=mission.target_column,
+        k=20,
+        top_k_interactions=10,
+        forbidden=mission.forbidden_columns,
+        seed=seed,
+    )
     l2_path = sketch_dir / "L2.json"
     save_l2(l2_summary, l2_path)
 

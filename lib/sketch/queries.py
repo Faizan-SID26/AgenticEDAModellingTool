@@ -247,12 +247,19 @@ def fit_quick(
     df = pd.read_parquet(_abs(project_dir, cs_path))
     if target not in df.columns:
         return {"error": f"target {target} not in coreset"}
-    feats = [f for f in features if f in df.columns and f != target]
+    # Drop the framework-internal `weight` column even if the caller
+    # included it. Sample weights are *not* passed to fit (see lib.run for
+    # the full rationale): the L4 coreset's importance sampling already
+    # shifts the class mix; passing weights again inflates training metrics.
+    feats = [
+        f
+        for f in features
+        if f in df.columns and f != target and f != "weight"
+    ]
     if not feats:
         return {"error": "no requested features available in coreset"}
     X = df[feats].select_dtypes(include="number").fillna(0).values
     y = df[target].values
-    sample_w = df["weight"].values if "weight" in df.columns else None
 
     n = len(X)
     n_train = int(n * 0.8)
@@ -260,13 +267,7 @@ def fit_quick(
     ytr, yva = y[:n_train], y[n_train:]
 
     model = registry_factory(capability_key).default(seed=seed)
-    if sample_w is not None:
-        try:
-            model.fit(Xtr, ytr, sample_weight=sample_w[:n_train])
-        except TypeError:
-            model.fit(Xtr, ytr)
-    else:
-        model.fit(Xtr, ytr)
+    model.fit(Xtr, ytr)
 
     yp_va = _predict_proba_or_value(model, Xva)
     metrics = dispatch_metrics(capability_key, yva, yp_va)
@@ -300,7 +301,11 @@ def cross_validate_quick(
     if cs_path is None:
         return {"error": f"no L4 coreset for capability {capability_key}"}
     df = pd.read_parquet(_abs(project_dir, cs_path))
-    feats = [f for f in features if f in df.columns and f != target]
+    feats = [
+        f
+        for f in features
+        if f in df.columns and f != target and f != "weight"
+    ]
     if not feats:
         return {"error": "no requested features available in coreset"}
     X = df[feats].select_dtypes(include="number").fillna(0).values

@@ -24,7 +24,7 @@ _log = logging.getLogger("eda.skeptic")
 
 def _check_finite_metric(experiment: ExperimentResult) -> tuple[bool, str | None]:
     v = experiment.primary_metric_value
-    if not math.isfinite(v):
+    if v is None or not math.isfinite(v):
         return False, "primary_metric_non_finite"
     return True, None
 
@@ -46,6 +46,8 @@ def _check_too_good_to_be_true(experiment: ExperimentResult) -> tuple[bool, str 
     """A primary AUC of >0.99 with few features is suspicious — usually leakage."""
     pm = experiment.primary_metric
     v = experiment.primary_metric_value
+    if v is None:
+        return True, None
     if pm in ("roc_auc", "average_precision") and v >= 0.99 and len(experiment.features_used) < 10:
         return False, "too_good_to_be_true_likely_leakage"
     return True, None
@@ -54,6 +56,8 @@ def _check_too_good_to_be_true(experiment: ExperimentResult) -> tuple[bool, str 
 def _check_metric_in_range(experiment: ExperimentResult) -> tuple[bool, str | None]:
     pm = experiment.primary_metric
     v = experiment.primary_metric_value
+    if v is None:
+        return True, None  # finite_metric will fire instead
     if pm in ("roc_auc", "average_precision") and not (0 <= v <= 1.0001):
         return False, f"{pm}_out_of_range"
     return True, None

@@ -25,18 +25,43 @@ _log = logging.getLogger("eda.sketch.l3")
 
 _MAX_REGIMES = 8
 _MIN_REGIME_FRACTION = 0.05
+_PELT_MAX_ROWS = 5000
+"""PELT with the rbf kernel is O(N²) memory; cap rows we attempt it on
+and let CUSUM handle larger signals."""
 
 
-def _detect_changepoints_pelt(signal: np.ndarray, *, pen: float = 10.0) -> list[int]:
-    """Try ruptures.PELT for change-point detection."""
+def _detect_changepoints_pelt(
+    signal: np.ndarray,
+    *,
+    pen: float = 10.0,
+    max_rows: int = _PELT_MAX_ROWS,
+) -> list[int]:
+    """Try ruptures.PELT for change-point detection.
+
+    Returns an empty list (caller will fall through to CUSUM) when:
+    - `ruptures` is not installed,
+    - the signal is longer than `max_rows` (PELT-rbf is O(N²) memory),
+    - PELT itself raises (defensive: never abort the build because of L3).
+    """
+    if signal.size > max_rows:
+        _log.info(
+            "PELT skipped: signal_size=%d exceeds max_rows=%d; CUSUM will be used.",
+            signal.size,
+            max_rows,
+        )
+        return []
     try:
         import ruptures as rpt  # type: ignore
     except ImportError:
         return []
     if signal.ndim == 1:
         signal = signal.reshape(-1, 1)
-    algo = rpt.Pelt(model="rbf").fit(signal)
-    bkps = algo.predict(pen=pen)
+    try:
+        algo = rpt.Pelt(model="rbf").fit(signal)
+        bkps = algo.predict(pen=pen)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("PELT failed (%s); falling back to CUSUM.", e)
+        return []
     return [int(b) for b in bkps[:-1]]  # drop trailing N
 
 

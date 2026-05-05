@@ -26,13 +26,15 @@ _log = logging.getLogger("eda.synthesize")
 
 def _pick_best(experiments: list[ExperimentResult], direction: str) -> Optional[ExperimentResult]:
     valid = [
-        e for e in experiments if e.skeptic.verdict != "FAIL" and e.primary_metric_value == e.primary_metric_value
+        e
+        for e in experiments
+        if e.skeptic.verdict != "FAIL" and e.primary_metric_value is not None
     ]
     if not valid:
         return None
     if direction == ">=":
-        return max(valid, key=lambda e: e.primary_metric_value)
-    return min(valid, key=lambda e: e.primary_metric_value)
+        return max(valid, key=lambda e: e.primary_metric_value)  # type: ignore[arg-type,return-value]
+    return min(valid, key=lambda e: e.primary_metric_value)  # type: ignore[arg-type,return-value]
 
 
 def _select_plots(project_dir: Path, best: ExperimentResult) -> list[Path]:
@@ -117,9 +119,11 @@ def render_synthesis_md(scaffold: dict[str, object], reviewer_notes: str = "") -
         lines.append(f"- `{p}`")
     lines.append("\n## Recent experiments")
     for r in scaffold.get("recent_experiments", []):
+        v = r.get("primary_metric_value")
+        v_str = f"{v:.4f}" if v is not None else "n/a"
         lines.append(
             f"- `{r['id']}` iter={r['iteration']} model={r['model']} area={r['area']} "
-            f"value={r['primary_metric_value']:.4f} verdict={r['verdict']}"
+            f"value={v_str} verdict={r['verdict']}"
         )
     lines.append("\n## Bandit posteriors")
     for k, v in sorted(scaffold.get("bandit_posteriors", {}).items(), key=lambda kv: -kv[1]):

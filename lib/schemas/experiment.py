@@ -82,9 +82,15 @@ class ExperimentResult(VersionedModel):
         ...,
         description="Key of the metric that drives best-tracking (matches MISSION.success_criterion.metric).",
     )
-    primary_metric_value: float = Field(
-        ...,
-        description="Value of `primary_metric` on `success_criterion.on_split`.",
+    primary_metric_value: Optional[float] = Field(
+        default=None,
+        description=(
+            "Value of `primary_metric` on `success_criterion.on_split`. "
+            "`None` means the metric was not finite on this iteration "
+            "(e.g., constant target in a fold) — distinct from `0.0`. "
+            "Stored as null in JSONL for clean round-trips through strict "
+            "JSON parsers."
+        ),
     )
     is_best_so_far: bool = Field(
         default=False,

@@ -122,8 +122,12 @@ def update_after_experiment(
 
 def _residual_signature(experiment: ExperimentResult) -> dict[str, float]:
     """Distill an experiment into a small dict of features for L7 matching."""
+    pmv = experiment.primary_metric_value
     sig: dict[str, float] = {
-        "primary_metric_value": float(experiment.primary_metric_value),
+        # 0.0 sentinel when the metric was non-finite — keeps the cluster
+        # catalog tractable; the verdict_fail flag carries the "this row
+        # failed" signal independently.
+        "primary_metric_value": float(pmv) if pmv is not None else 0.0,
         "info_gain_actual": float(experiment.info_gain_actual),
         "n_features": float(len(experiment.features_used)),
         "verdict_warn": 1.0 if experiment.skeptic.verdict == "WARN" else 0.0,

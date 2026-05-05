@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Optional
 
 import numpy as np
 import pandas as pd
@@ -48,21 +48,45 @@ def _safe_pca(num: pd.DataFrame, k: int, seed: int = 0) -> tuple[list[float], di
 
 
 def _safe_top_interactions(
-    df: pd.DataFrame, target: str, top_k: int = 10, seed: int = 0
+    df: pd.DataFrame,
+    target: str,
+    *,
+    top_k: int = 10,
+    forbidden: Optional[Iterable[str]] = None,
+    seed: int = 0,
 ) -> list[dict[str, Any]]:
-    """Compute pairwise mutual information between numeric columns and target.
+    """Compute top-K *feature-feature* interactions on the numeric subset.
 
-    Returns ranked pairs. If `target` is not in df, falls back to scoring
-    pairs by absolute Pearson correlation in the numeric subset.
+    Filters ``target`` and ``forbidden`` columns out of both sides of every
+    pair before materializing — top_interactions is consumed directly by
+    the ``engineered:interactions_top5`` DSL token, so leaving the target
+    in any pair would manifest as a leakage feature
+    (``X__feature_x_target``).
+
+    Strategy:
+        1. Drop target + forbidden + non-numeric columns.
+        2. Rank candidate features by univariate MI vs the target (so we
+           shortlist the most predictive features), then return top-K
+           feature-feature pairs from that shortlist by absolute Pearson
+           correlation. This keeps interactions semantically pair-wise
+           (no target on either side) while still biasing toward pairs
+           that involve high-signal columns.
+        3. If MI is unavailable (no target / failure), fall back to
+           ranking pairs purely by absolute Pearson correlation.
     """
-    num = _select_numeric(df)
-    if num.empty:
+    forbidden_set = set(forbidden or ())
+    forbidden_set.add(target)
+
+    num = _select_numeric(df).drop(columns=list(forbidden_set), errors="ignore")
+    if num.empty or num.shape[1] < 2:
         return []
 
-    pairs: list[dict[str, Any]] = []
+    candidate_cols = list(num.columns)
+
+    # Step 1: shortlist candidates by univariate MI vs target (if available).
     if target in df.columns:
-        y = df[target]
         try:
+            y = df[target]
             if pd.api.types.is_numeric_dtype(y):
                 from sklearn.feature_selection import mutual_info_regression as mi_fn
 
@@ -71,31 +95,27 @@ def _safe_top_interactions(
                 from sklearn.feature_selection import mutual_info_classif as mi_fn
 
                 yv = pd.factorize(y)[0]
-            X = num.drop(columns=[target], errors="ignore").values
-            mi = mi_fn(X, yv, random_state=seed)
-            cols = [c for c in num.columns if c != target]
-            order = np.argsort(mi)[::-1][:top_k]
-            for rank, idx in enumerate(order, start=1):
-                pairs.append(
-                    {
-                        "col_a": cols[idx],
-                        "col_b": target,
-                        "mutual_info": float(mi[idx]),
-                        "rank": int(rank),
-                        "interaction_strength_residual": 0.0,
-                    }
-                )
-            if pairs:
-                return pairs
+            mi = mi_fn(num.values, yv, random_state=seed)
+            order = np.argsort(mi)[::-1]
+            # Keep top-2K candidates so we still see (top × second-top)
+            # interactions without the pair count blowing up.
+            n_keep = min(len(candidate_cols), max(2 * top_k, 8))
+            candidate_cols = [candidate_cols[i] for i in order[:n_keep]]
         except Exception as e:  # noqa: BLE001
-            _log.debug("MI to target failed: %s; falling back to correlation", e)
+            _log.debug("MI shortlist failed (%s); using all features", e)
 
-    # Pairwise correlation fallback.
-    corr = num.corr(method="pearson").abs()
+    # Step 2: rank feature-feature pairs by |corr| within the shortlist.
+    sub = num[candidate_cols]
+    corr = sub.corr(method="pearson").abs()
     np.fill_diagonal(corr.values, np.nan)
     flat = corr.unstack().dropna().sort_values(ascending=False)
-    seen = set()
+
+    pairs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
     for (a, b), v in flat.items():
+        # Defense in depth: must never include target or forbidden.
+        if a in forbidden_set or b in forbidden_set or a == b:
+            continue
         key = tuple(sorted([a, b]))
         if key in seen:
             continue
@@ -114,11 +134,34 @@ def _safe_top_interactions(
     return pairs
 
 
-def build_l2(df: pd.DataFrame, target: str = "", *, k: int = 20, top_k_interactions: int = 10, seed: int = 0) -> L2JointSummary:
-    """Build the L2 joint summary."""
-    num = _select_numeric(df)
+def build_l2(
+    df: pd.DataFrame,
+    target: str = "",
+    *,
+    k: int = 20,
+    top_k_interactions: int = 10,
+    forbidden: Optional[Iterable[str]] = None,
+    seed: int = 0,
+) -> L2JointSummary:
+    """Build the L2 joint summary.
+
+    ``forbidden`` (typically ``MISSION.forbidden_columns``) is stripped
+    from both PCA inputs and the interaction pool so downstream
+    ``engineered:interactions_top5`` cannot accidentally materialize a
+    leakage feature.
+    """
+    forbidden_set = set(forbidden or ())
+    if target:
+        forbidden_set.add(target)
+    num = _select_numeric(df).drop(columns=list(forbidden_set), errors="ignore")
     evr, loadings = _safe_pca(num, k=k, seed=seed)
-    interactions = _safe_top_interactions(df, target=target, top_k=top_k_interactions, seed=seed)
+    interactions = _safe_top_interactions(
+        df,
+        target=target,
+        top_k=top_k_interactions,
+        forbidden=forbidden,
+        seed=seed,
+    )
     return L2JointSummary(
         n_components=max(1, len(evr) or 1),
         explained_variance_ratio=evr,

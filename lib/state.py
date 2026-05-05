@@ -206,8 +206,8 @@ def next(project_dir: Path, mission: Mission) -> IterationBrief:
 # --- Recording ----------------------------------------------------------
 
 
-def _is_improvement(value: float, best: float, direction: str) -> bool:
-    if not math.isfinite(value):
+def _is_improvement(value: Optional[float], best: float, direction: str) -> bool:
+    if value is None or not math.isfinite(value):
         return False
     if not math.isfinite(best):
         return True
@@ -230,10 +230,12 @@ def record(
     if improved:
         # Compute info gain as the magnitude of improvement vs prior best,
         # bounded into [0,1] for the bandit.
+        # `improved=True` already implies primary_metric_value is finite.
         prior = state.best_primary_metric_value if math.isfinite(state.best_primary_metric_value) else 0.0
-        delta = abs(experiment.primary_metric_value - prior)
+        cur = float(experiment.primary_metric_value)  # type: ignore[arg-type]
+        delta = abs(cur - prior)
         experiment.info_gain_actual = float(min(1.0, delta * 5.0))
-        state.best_primary_metric_value = float(experiment.primary_metric_value)
+        state.best_primary_metric_value = cur
         state.best_iteration = int(experiment.iteration)
         state.iterations_since_improvement = 0
     else:

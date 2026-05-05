@@ -50,12 +50,16 @@ _log = logging.getLogger("eda.finalize")
 
 
 def _pick_best(experiments: list[ExperimentResult], direction: str) -> Optional[ExperimentResult]:
-    valid = [e for e in experiments if e.skeptic.verdict != "FAIL" and e.primary_metric_value == e.primary_metric_value]
+    valid = [
+        e
+        for e in experiments
+        if e.skeptic.verdict != "FAIL" and e.primary_metric_value is not None
+    ]
     if not valid:
         return None
     if direction == ">=":
-        return max(valid, key=lambda e: e.primary_metric_value)
-    return min(valid, key=lambda e: e.primary_metric_value)
+        return max(valid, key=lambda e: e.primary_metric_value)  # type: ignore[arg-type,return-value]
+    return min(valid, key=lambda e: e.primary_metric_value)  # type: ignore[arg-type,return-value]
 
 
 def _confidence_tier(
@@ -63,7 +67,7 @@ def _confidence_tier(
     mission: Mission,
     n_experiments: int,
 ) -> str:
-    if best is None:
+    if best is None or best.primary_metric_value is None:
         return "no_signal"
     sc = mission.success_criterion
     bv = best.primary_metric_value
@@ -227,9 +231,11 @@ def build_recommendation(
 
     rationale_parts: list[str] = []
     if best:
+        bv = best.primary_metric_value
+        bv_str = f"{bv:.4f}" if bv is not None else "(non-finite)"
         rationale_parts.append(
             f"Best run was iter {best.iteration} ({best.model}, area={best.area}) "
-            f"with {best.primary_metric}={best.primary_metric_value:.4f}."
+            f"with {best.primary_metric}={bv_str}."
         )
     rationale_parts.append(
         f"Capability composition: {composition_signature(mission.capability)}."
@@ -250,7 +256,7 @@ def build_recommendation(
     )
 
     model_card: list[ModelCardEntry] = []
-    if best:
+    if best and best.primary_metric_value is not None:
         model_card.append(
             ModelCardEntry(
                 model=best.model,

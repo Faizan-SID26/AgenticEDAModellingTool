@@ -177,7 +177,10 @@ def execute_plan(
 
     X = coreset[feats].select_dtypes(include="number").fillna(0).values
     y = coreset[target].values
-    sample_w = coreset["weight"].values if "weight" in coreset.columns else None
+    # The L4 coreset's per-row `weight` column was the source of metric
+    # inflation: importance-weighted sampling already shifts the class
+    # mix, so passing weights into model.fit double-counts and inflates
+    # primary metrics. Treat coreset rows as unweighted at fit time.
 
     splitter = _make_splitter(capability_key)
     splits = splitter(
@@ -202,10 +205,7 @@ def execute_plan(
             return _failed_experiment(plan, mission, capability_spec, t0, seeds={"numpy": seed},
                                       reason=f"unknown model {plan.model}")
         try:
-            try:
-                model.fit(X[tr], y[tr], sample_weight=sample_w[tr] if sample_w is not None else None)
-            except TypeError:
-                model.fit(X[tr], y[tr])
+            model.fit(X[tr], y[tr])
             yhat_tr = _safe_predict(model, X[tr])
             yhat_va = _safe_predict(model, X[va])
         except Exception as e:  # noqa: BLE001
@@ -219,15 +219,23 @@ def execute_plan(
     metrics_train = _avg(train_metrics_acc)
     metrics_val = _avg(val_metrics_acc)
 
-    primary_metric = capability_spec.primary_metric
+    # Honor MISSION.success_criterion.metric — that is the metric the user
+    # actually committed to on this project. Only fall back to the
+    # capability's default when the mission did not pin one.
+    primary_metric = (
+        mission.success_criterion.metric
+        or capability_spec.primary_metric
+    )
     primary_split = mission.success_criterion.on_split
-    pm_value = (
+    pm_value: Optional[float] = (
         metrics_val.get(primary_metric)
         if primary_split in ("validation", "test")
         else metrics_train.get(primary_metric)
     )
     if pm_value is None or not np.isfinite(pm_value):
-        pm_value = float("nan")
+        # Use None (not NaN) so the JSONL log round-trips cleanly through
+        # JSON parsers that reject NaN.
+        pm_value = None
 
     # 6. Plots.
     plots = _save_plots(
@@ -249,9 +257,12 @@ def execute_plan(
         calibrated=plan.calibrate,
         technique_family=plan.technique_family,
         area=plan.area,
-        metrics=FitMetrics(train=metrics_train, validation=metrics_val),
+        metrics=FitMetrics(
+            train=_strip_nonfinite(metrics_train),
+            validation=_strip_nonfinite(metrics_val),
+        ),
         primary_metric=primary_metric,
-        primary_metric_value=float(pm_value if pm_value is not None else float("nan")),
+        primary_metric_value=pm_value,
         skeptic=SkepticResult(verdict="ACCEPT"),  # filled below
         plot_paths=plots,
         seeds={"numpy": seed, "model": seed},
@@ -284,6 +295,12 @@ def _avg(rows: list[dict[str, float]]) -> dict[str, float]:
     return out
 
 
+def _strip_nonfinite(d: dict[str, float]) -> dict[str, float]:
+    """Drop NaN/inf entries from a metric dict so the experiment log JSON
+    round-trips cleanly through strict parsers."""
+    return {k: float(v) for k, v in d.items() if v is not None and np.isfinite(v)}
+
+
 def _failed_experiment(
     plan: PlanDict,
     mission: Mission,
@@ -304,8 +321,8 @@ def _failed_experiment(
         technique_family=plan.technique_family,
         area=plan.area,
         metrics=FitMetrics(),
-        primary_metric=capability_spec.primary_metric,
-        primary_metric_value=float("nan"),
+        primary_metric=mission.success_criterion.metric or capability_spec.primary_metric,
+        primary_metric_value=None,
         is_best_so_far=False,
         skeptic=SkepticResult(verdict="FAIL", failed_checks=["execution_failed"], notes=reason),
         seeds=seeds,

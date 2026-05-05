@@ -53,7 +53,11 @@ def check(
     exps = list(recent_experiments)[-window:]
     if len(exps) < window:
         return DoomLoopVerdict(False, fingerprint=fps[0], consecutive_repeats=len(plans))
-    metrics = [e.primary_metric_value for e in exps]
+    metrics = [e.primary_metric_value for e in exps if e.primary_metric_value is not None]
+    if len(metrics) < window:
+        # Cannot judge flatness when the metric was non-finite for any of
+        # the trailing experiments. Doom-loop is *not* fired in that case.
+        return DoomLoopVerdict(False, fingerprint=fps[0], consecutive_repeats=int(same) * window)
     flat = max(metrics) - min(metrics) < 1e-4
     if same and flat:
         return DoomLoopVerdict(

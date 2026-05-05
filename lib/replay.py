@@ -98,8 +98,8 @@ def replay_project(
         # Compare primary metric value.
         a = original.primary_metric_value
         b = replayed.primary_metric_value
-        delta = float("nan")
-        if math.isfinite(a) and math.isfinite(b):
+        delta: Optional[float] = None
+        if a is not None and b is not None and math.isfinite(a) and math.isfinite(b):
             delta = abs(a - b)
         drift.append(
             {
