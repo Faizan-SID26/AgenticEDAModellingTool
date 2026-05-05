@@ -25,7 +25,7 @@ All notable changes to the EDA Framework. Format: [Keep a Changelog](https://kee
 - Deterministic replay (`lib.replay`).
 - CLI: `eda new-project`, `list`, `status`, `library`, `replay`.
 
-### Known limitations (see `BUILD_NOTES.md`)
+### Known limitations
 
 - Some capability default-models are simple sklearn baselines; LightGBM is
   enabled but tuning ranges are conservative.

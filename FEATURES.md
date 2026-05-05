@@ -222,7 +222,7 @@ flowchart LR
     end
 
     L7Init --> L7
-    L1 -. "queries" .-> Q[("MCP sketch_server<br/>quantile, distribution,<br/>top_interactions, regimes,<br/>causal_neighbors,<br/>failure_clusters, ..."")]
+    L1 -. "queries" .-> Q[("MCP sketch_server<br/>quantile, distribution,<br/>top_interactions, regimes,<br/>causal_neighbors,<br/>failure_clusters, ...")]
     L2 -. .-> Q
     L3 -. .-> Q
     L5 -. .-> Q
@@ -724,7 +724,7 @@ sequenceDiagram
         Run-->>Replay: replayed ExperimentResult
         Replay->>Drift: compare original vs replayed primary metric
     end
-    Drift-->>CLI: { id, original, replayed, abs_delta }[]
+    Drift-->>CLI: per-experiment drift report (id, original, replayed, abs_delta)
 ```
 
 A clean replay has `abs_delta < 1e-6` for every iteration. Any drift is

@@ -1022,10 +1022,9 @@ re-runs the relevant subset on commit.
 
 ## Where to go from here
 
-- [`FEATURES.md`](FEATURES.md) — capability and feature tour with
+- [`README.md`](README.md) — top-level overview + documentation index.
+- [`FEATURES.md`](FEATURES.md) — deep capability and feature tour with
   diagrams.
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — architectural principles and
-  agent role spec.
 - [`docs/quickstart.md`](docs/quickstart.md) — 10-minute walkthrough.
 - [`docs/sketch.md`](docs/sketch.md) — the sketch in depth.
 - [`docs/agent_roles.md`](docs/agent_roles.md) — role contracts.
@@ -1033,5 +1032,3 @@ re-runs the relevant subset on commit.
   how knowledge merges propagate end-to-end.
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — common
   failures + fixes.
-- [`BUILD_NOTES.md`](BUILD_NOTES.md) — what shipped in v1, what is
-  intentionally simple, and the full validation matrix.
