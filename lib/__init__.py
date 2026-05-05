@@ -1,4 +1,4 @@
-"""EDA Framework — core library.
+"""AgenticEDAModellingTool — core library.
 
 The agent never imports from `lib` directly: it uses slash commands and the
 MCP tool surface. Code in `lib/` is invoked deterministically by the runner

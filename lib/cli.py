@@ -31,7 +31,7 @@ _console = Console()
 @click.version_option(version=__version__, prog_name="eda")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging.")
 def main(verbose: bool) -> None:
-    """EDA Framework command-line interface."""
+    """AgenticEDAModellingTool command-line interface."""
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s :: %(message)s",

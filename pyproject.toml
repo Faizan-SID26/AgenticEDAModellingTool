@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "eda-framework"
+name = "agentic-eda-modelling-tool"
 version = "0.1.0"
 description = "Claude-Code-native EDA + modeling framework with cross-project organizational learning"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
-authors = [{ name = "EDA Framework Team" }]
+authors = [{ name = "Data Science Team" }]
 keywords = ["eda", "ml", "automl", "claude", "agentic", "data-sketch"]
 classifiers = [
     "Development Status :: 3 - Alpha",

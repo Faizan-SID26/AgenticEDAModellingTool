@@ -9,7 +9,7 @@
 
 ```bash
 git clone <this repo>
-cd eda-framework
+cd AgenticEDAModellingTool
 python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -e .
 pre-commit install

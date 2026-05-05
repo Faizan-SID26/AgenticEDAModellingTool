@@ -1,4 +1,4 @@
-# EDA Framework
+# AgenticEDAModellingTool
 
 > A Claude-Code-native ML platform for end-to-end exploratory data analysis,
 > modeling, and hypothesis testing — where every completed project becomes
@@ -125,7 +125,7 @@ artifacts. No `eval()`, no agent-written data manipulation.
 
 ```bash
 git clone <this repo>
-cd eda-framework
+cd AgenticEDAModellingTool
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # Unix:    source .venv/bin/activate
@@ -498,7 +498,7 @@ Full options: `eda <verb> --help` or [USAGE.md §5](USAGE.md#5-cli-reference).
 ## Repository layout
 
 ```
-eda-framework/
+AgenticEDAModellingTool/
 ├── README.md                  # this file
 ├── USAGE.md                   # detailed usage + contributor guide
 ├── FEATURES.md                # deep capability tour with diagrams

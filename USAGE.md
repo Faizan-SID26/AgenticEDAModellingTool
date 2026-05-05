@@ -1,4 +1,4 @@
-# EDA Framework — Usage & Contributor Guide
+# AgenticEDAModellingTool — Usage & Contributor Guide
 
 How to use the framework end-to-end, then how to extend or contribute
 to it. Pair with [`FEATURES.md`](FEATURES.md) for the deep "what does
@@ -51,7 +51,7 @@ this do and why" tour.
 
 ```bash
 git clone <this repo>
-cd eda-framework
+cd AgenticEDAModellingTool
 python -m venv .venv
 # Windows:
 .venv\Scripts\activate
@@ -610,7 +610,7 @@ MCP server is wired in by default.
 
 ```bash
 git clone <this repo>
-cd eda-framework
+cd AgenticEDAModellingTool
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 pre-commit install

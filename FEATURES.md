@@ -1,4 +1,4 @@
-# EDA Framework — Features & Capabilities
+# AgenticEDAModellingTool — Features & Capabilities
 
 A deep tour of every feature in v1. Diagrams are [Mermaid](https://mermaid.js.org/)
 (renders inline on GitHub).
