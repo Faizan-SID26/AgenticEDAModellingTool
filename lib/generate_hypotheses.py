@@ -159,32 +159,65 @@ def _hypothesis_from_failures(catalog, family: str, iteration: int) -> Optional[
     }
 
 
-def _wildcard_hypothesis(family: str, iteration: int) -> dict[str, Any]:
-    """One per untried family — the agent will translate
-    `model_hint=family_default` into a concrete registry key."""
-    family_to_model = {
-        "linear": "logreg",
-        "tree": "lgbm_binary",
-        "boosted_tree": "lgbm_binary",
-        "neural": "logreg",  # registry has no MLP yet; researcher escalates if needed
-        "ensemble": "lgbm_binary",
-        "rule_based": "logreg",
-        "survival": "cox_ph",
-        "anomaly": "isolation_forest",
-        "forecasting_classical": "naive_seasonal",
-        "forecasting_neural": "ridge_lagged",
-    }
-    model = family_to_model.get(family, "logreg")
+# Family → list of registry keys, capability-agnostic. Each entry's keys are
+# filtered through `lib.registry.is_available(model_key, capability_key)` so
+# only models that can actually be built in the current environment surface.
+# Replaces the prior single-key `family_to_model` mapping (which collapsed
+# `neural` to `logreg` and made wildcards meaningless).
+_FAMILY_TO_KEYS: dict[str, list[str]] = {
+    "linear": ["elasticnet", "logreg_l1", "logreg_elastic", "ridge_classifier", "logreg", "ridge"],
+    "tree": ["extra_trees", "random_forest", "decision_tree", "lgbm_binary"],
+    "boosted_tree": ["xgboost_binary", "catboost_binary", "lgbm_focal", "lgbm_weighted", "xgboost_focal", "lgbm_binary"],
+    "neural": ["mlp_tabular", "ft_transformer", "tabnet"],
+    "ensemble": ["stacked_blend", "voting_soft", "bagging"],
+    "rule_based": ["decision_tree", "logreg"],
+    "survival": ["random_survival_forest", "lgbm_aft", "cox_ph", "lgbm_survival"],
+    "anomaly": ["autoencoder_anomaly", "isolation_forest", "ocsvm", "lof"],
+    "forecasting_classical": ["prophet", "theta", "ets", "naive_seasonal"],
+    "forecasting_neural": ["ridge_lagged", "lgbm_regressor", "mlp_tabular_regressor"],
+}
+
+
+def _wildcard_keys_for(family: str, capability_key: str) -> list[str]:
+    """Available registry keys for `family` filtered by capability +
+    optional-import availability. Empty list means the wildcard generator
+    skips this family — preferable to emitting unbuildable plans."""
+    from lib.registry import is_available
+    candidates = _FAMILY_TO_KEYS.get(family, [])
+    return [k for k in candidates if is_available(k, capability_key)]
+
+
+def _wildcard_hypothesis(
+    family: str,
+    iteration: int,
+    *,
+    model_key: Optional[str] = None,
+    rationale_extra: str = "",
+) -> dict[str, Any]:
+    """One wildcard hypothesis. When `model_key` is provided the hypothesis
+    is grounded in that specific registry key (real escape). When omitted,
+    falls back to the legacy "let the researcher pick" shape — used outside
+    breakthrough mode for back-compat."""
+    if model_key is None:
+        model_hint = "logreg"
+        suffix = family
+    else:
+        model_hint = model_key
+        suffix = f"{family}-{model_key}"
+    summary_parts = [
+        f"Wildcard arm: try a {family} variant we have not yet sampled.",
+    ]
+    if model_key:
+        summary_parts.append(f"Concrete model: `{model_key}` (registry-resolved).")
+    if rationale_extra:
+        summary_parts.append(rationale_extra)
     return {
-        "hypothesis_id": f"H-iter{iteration}-wild-{family}",
-        "name": f"wildcard_{family}",
-        "summary": (
-            f"Wildcard arm: try a {family} variant we have not yet sampled. "
-            "Researcher should pick the most natural model in this family for the capability."
-        ),
+        "hypothesis_id": f"H-iter{iteration}-wild-{suffix}",
+        "name": f"wildcard_{suffix}",
+        "summary": " ".join(summary_parts),
         "technique_family": family,
         "area": "baseline",
-        "model_hint": model,
+        "model_hint": model_hint,
         "features_dsl": ["+all_allowed"],
         # Wildcards have an *exploratory* prior, not a high one.
         "expected_info_gain": 0.5,
@@ -267,7 +300,13 @@ def _cross_project_hypotheses(
     workspace: Optional[Path] = None,
 ) -> list[dict[str, Any]]:
     """Pull the highest-info-gain hypothesis patterns from cross-project
-    knowledge that match this project's domain + capability."""
+    knowledge that match this project's domain + capability.
+
+    Hydrates `model_hint` and `features_dsl` from the source entry when
+    available (Pillar 3) so cross-project knowledge becomes a real plan to
+    replay rather than a relabeled LightGBM run. Legacy entries without
+    those fields fall back to `lgbm_default` + `+all_allowed`.
+    """
     try:
         from lib.capabilities import composition_signature
         from lib.retrieval import query_hypotheses
@@ -284,7 +323,26 @@ def _cross_project_hypotheses(
         _log.debug("cross-project retrieval failed: %s", e)
         return []
     out: list[dict[str, Any]] = []
+    cap_key = None
+    try:
+        from lib.capabilities import validate_composition
+        cap_key = validate_composition(mission.capability).key
+    except Exception:  # noqa: BLE001 — keep going on capability resolution failure
+        cap_key = None
     for i, r in enumerate(rows):
+        # Hydrate from the source entry when present and the model is
+        # actually available for this capability; otherwise fall back to a
+        # generic LGBM shape.
+        src_model = getattr(r, "model", None)
+        src_dsl = list(getattr(r, "feature_dsl", []) or [])
+        src_params = dict(getattr(r, "params", {}) or {})
+        if src_model and cap_key:
+            try:
+                from lib.registry import is_available
+                if not is_available(src_model, cap_key):
+                    src_model = None
+            except Exception:  # noqa: BLE001
+                pass
         out.append(
             {
                 "hypothesis_id": f"H-iter{iteration}-xproj-{i}",
@@ -295,10 +353,15 @@ def _cross_project_hypotheses(
                 ),
                 "technique_family": r.technique_family or family,
                 "area": "features",
-                "model_hint": "lgbm_default",
-                "features_dsl": ["+all_allowed"],
+                "model_hint": src_model or "lgbm_default",
+                "features_dsl": src_dsl or ["+all_allowed"],
+                "params": src_params,
                 "expected_info_gain": float(min(0.85, r.info_gain)),
-                "rationale": f"Cross-project retrieval. Source={r.source_project}.",
+                "rationale": (
+                    f"Cross-project retrieval. Source={r.source_project}; "
+                    f"hydrated model={src_model or 'fallback'}, "
+                    f"dsl_tokens={len(src_dsl)}."
+                ),
                 "source": "generator_cross_project",
             }
         )
@@ -315,6 +378,52 @@ def _iterations_since_improvement(project_dir: Path) -> int:
         return int(load_run_state(project_dir).iterations_since_improvement)
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _breakthrough_active(project_dir: Path) -> bool:
+    try:
+        from lib.state import load_run_state
+
+        return bool(load_run_state(project_dir).breakthrough_mode_active)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _tried_models(project_dir: Path) -> set[str]:
+    """Set of registry keys the project has actually fitted (non-FAIL only).
+    Used by breakthrough wildcards so each new wildcard escapes a model the
+    project has not used yet."""
+    try:
+        from lib.state import read_experiments
+
+        return {
+            e.model
+            for e in read_experiments(project_dir)
+            if e.skeptic.verdict != "FAIL" and e.model
+        }
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _reviewer_directives(project_dir: Path) -> list[dict[str, Any]]:
+    """Read all `source=reviewer_directive` hypotheses from HYPOTHESES.jsonl
+    that haven't yet expired (the generator marks them consumed by setting
+    `consumed=True` after first selection — see `mark_directive_consumed`)."""
+    p = project_dir / "memory" / "HYPOTHESES.jsonl"
+    if not p.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if r.get("source") == "reviewer_directive" and not r.get("consumed"):
+            out.append(r)
+    return out
 
 
 def generate(
@@ -345,16 +454,31 @@ def generate(
     rationale).
     """
     project_dir = Path(project_dir)
+
+    # Reviewer-directive hypotheses jump the queue regardless of cold/warm
+    # state. They expire after first selection (consumed flag).
+    directive_out: list[dict[str, Any]] = []
+    for d in _reviewer_directives(project_dir):
+        directive_out.append(d)
+
     if iteration < cold_start_iterations:
         seeds_path = seeds_path or (project_dir / "memory" / "HYPOTHESES.jsonl")
         if not seeds_path.exists():
-            return []
-        out = []
+            return directive_out
+        out = list(directive_out)
         for line in seeds_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
-            out.append(json.loads(line))
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # Don't double-emit reviewer directives that are already in
+            # directive_out (HYPOTHESES.jsonl is appended to during /run).
+            if rec.get("source") == "reviewer_directive":
+                continue
+            out.append(rec)
             if len(out) >= _MAX_HYPOTHESES:
                 break
         return out
@@ -363,8 +487,18 @@ def generate(
     top_arms = _bandit_top_arms(project_dir, k=3) or ["boosted_tree", "linear", "tree"]
     untried = _bandit_untried_families(project_dir, n=4)
     stagnant = _iterations_since_improvement(project_dir) >= _STAGNATION_THRESHOLD
+    in_breakthrough = _breakthrough_active(project_dir)
 
-    out: list[dict[str, Any]] = []
+    # Resolve capability_key once for `is_available` filtering.
+    cap_key: Optional[str] = None
+    try:
+        from lib.capabilities import validate_composition
+        cap_key = validate_composition(mission.capability).key
+    except Exception:  # noqa: BLE001
+        cap_key = None
+
+    # Reviewer directives lead the list (Pillar 9 priority).
+    out: list[dict[str, Any]] = list(directive_out)
 
     # Sketch-driven hypotheses, rotating the family across the top arms
     # so diversity is structural, not an afterthought.
@@ -421,10 +555,49 @@ def generate(
         )
     )
 
-    # Wildcard hypotheses — at least 1, double under stagnation.
-    n_wild = 2 if stagnant else 1
-    for fam in untried[:n_wild]:
-        out.append(_wildcard_hypothesis(fam, iteration=iteration))
+    # Wildcard hypotheses. Breakthrough mode emits one wildcard per untried
+    # *registry key*, not per family — so the researcher actually has
+    # somewhere different to escape to. Outside breakthrough mode the
+    # behavior is the legacy "1, doubled under stagnation" shape so
+    # back-compat is preserved.
+    if in_breakthrough and cap_key:
+        tried = _tried_models(project_dir)
+        # Iterate untried families in bandit order; for each, emit a wildcard
+        # per registry key not yet tried, capped at 4 total.
+        breakthrough_quota = 4
+        emitted = 0
+        for fam in untried:
+            if emitted >= breakthrough_quota:
+                break
+            keys = _wildcard_keys_for(fam, cap_key)
+            for key in keys:
+                if emitted >= breakthrough_quota:
+                    break
+                if key in tried:
+                    continue
+                out.append(
+                    _wildcard_hypothesis(
+                        fam,
+                        iteration=iteration,
+                        model_key=key,
+                        rationale_extra="Breakthrough mode: forced novelty.",
+                    )
+                )
+                emitted += 1
+    else:
+        n_wild = 2 if stagnant else 1
+        for fam in untried[:n_wild]:
+            # Pick the best available registry key for the family if we know
+            # the capability; otherwise leave model_key=None (legacy shape).
+            model_key = None
+            if cap_key:
+                keys = _wildcard_keys_for(fam, cap_key)
+                tried = _tried_models(project_dir)
+                untried_keys = [k for k in keys if k not in tried]
+                model_key = untried_keys[0] if untried_keys else (keys[0] if keys else None)
+            out.append(
+                _wildcard_hypothesis(fam, iteration=iteration, model_key=model_key)
+            )
 
     # Deduplicate by hypothesis_id and cap the list.
     seen: set[str] = set()

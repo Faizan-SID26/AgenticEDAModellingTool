@@ -141,17 +141,50 @@ class MissionBudget(VersionedModel):
         description="Maximum iterations before /run halts.",
     )
     stagnation_window: int = Field(
-        default=8,
+        default=12,
         gt=0,
         description=(
             "If no improvement in best metric for this many iterations, "
-            "/run halts."
+            "/run halts (unless the best metric is below `operational_floor`, "
+            "in which case the framework enters breakthrough mode instead)."
         ),
     )
     catastrophic_failure_window: int = Field(
         default=3,
         gt=0,
         description="Same severe skeptic failure repeating this many times → halt.",
+    )
+    operational_floor: Optional[float] = Field(
+        default=None,
+        description=(
+            "Absolute primary-metric floor below which stagnation must NOT "
+            "halt /run. Direction-aware: with direction='>=' the floor is a "
+            "minimum the metric must exceed; with '<=' it is a maximum it "
+            "must remain under. When set and the best primary metric is on "
+            "the wrong side, the framework enters breakthrough mode (heavier "
+            "registry, paper grounding, structural diversification) instead "
+            "of finalizing on a weak result. Default None preserves legacy "
+            "behavior (`success_criterion.threshold` is the only gate)."
+        ),
+    )
+    breakthrough_stagnation_window: int = Field(
+        default=20,
+        gt=0,
+        description=(
+            "Secondary stagnation window applied only after breakthrough mode "
+            "has been entered. Halts /run only after this many additional "
+            "iterations without improvement; gives the framework a "
+            "guaranteed long second window to find an escape."
+        ),
+    )
+    breakthrough_max_entries: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Cap on how many times breakthrough mode can be entered per /run "
+            "before finalize is allowed to write FINAL.md regardless of "
+            "operational_floor compliance. Bounds runaway re-entry loops."
+        ),
     )
 
 

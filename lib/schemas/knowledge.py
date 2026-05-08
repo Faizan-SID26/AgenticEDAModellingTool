@@ -7,7 +7,7 @@ names never appear in `knowledge/`.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import Field
 
@@ -49,6 +49,34 @@ class HypothesisLibraryEntry(VersionedModel):
     )
     primary_metric: str = Field(...)
     primary_metric_delta: float = Field(...)
+
+    # Hydration fields (Pillar 3) — let cross-project knowledge be reused as
+    # actual plans, not just labels. Optional for back-compat with older
+    # bundles that did not record them.
+    model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Registry model key the source experiment used (e.g. 'lgbm_focal'). "
+            "Used by `_cross_project_hypotheses` to materialize a plan that "
+            "actually replays the source's choice of model rather than "
+            "collapsing to a generic LGBM."
+        ),
+    )
+    feature_dsl: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Feature DSL tokens the source experiment used. Empty for "
+            "legacy bundles; the generator falls back to '+all_allowed' in "
+            "that case."
+        ),
+    )
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Hyperparameters the source experiment used. Replayed verbatim by "
+            "cross-project hypotheses."
+        ),
+    )
 
 
 class FailureModeEntry(VersionedModel):

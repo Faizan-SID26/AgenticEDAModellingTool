@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import traceback
 from pathlib import Path
@@ -177,10 +178,23 @@ def execute_plan(
 
     X = coreset[feats].select_dtypes(include="number").fillna(0).values
     y = coreset[target].values
-    # The L4 coreset's per-row `weight` column was the source of metric
-    # inflation: importance-weighted sampling already shifts the class
-    # mix, so passing weights into model.fit double-counts and inflates
-    # primary metrics. Treat coreset rows as unweighted at fit time.
+    # The L4 coreset's per-row `weight` column was historically dropped at
+    # fit time because importance-weighted sampling already shifts the class
+    # mix, so naively passing weights into model.fit double-counts and
+    # inflates primary metrics. We keep that as the default but allow the
+    # researcher to opt into sample-weighted fitting for techniques like
+    # focal-aligned weighted LGBM where the weight is the *only* signal of
+    # population prevalence the model receives.
+    use_sample_weight = bool(plan.params.get("use_sample_weight", False)) if plan.params else False
+    sample_weights = (
+        coreset["weight"].values
+        if use_sample_weight and "weight" in coreset.columns
+        else None
+    )
+    # Strip the framework-only flag from params before forwarding to the
+    # model factory; otherwise sklearn/lightgbm rejects it.
+    fit_params = dict(plan.params or {})
+    fit_params.pop("use_sample_weight", None)
 
     splitter = _make_splitter(capability_key)
     splits = splitter(
@@ -200,12 +214,20 @@ def execute_plan(
 
     for fold_i, (tr, va, _te) in enumerate(splits):
         try:
-            model = build_model(plan.model, seed=seed + fold_i, **(plan.params or {}))
-        except KeyError:
+            model = build_model(plan.model, seed=seed + fold_i, **fit_params)
+        except KeyError as ke:
             return _failed_experiment(plan, mission, capability_spec, t0, seeds={"numpy": seed},
-                                      reason=f"unknown model {plan.model}")
+                                      reason=f"unknown model {plan.model}: {ke}")
         try:
-            model.fit(X[tr], y[tr])
+            if sample_weights is not None:
+                # Try sample-weight pass-through; fall back gracefully if
+                # the model doesn't accept it (e.g. unsupervised wrappers).
+                try:
+                    model.fit(X[tr], y[tr], sample_weight=sample_weights[tr])
+                except TypeError:
+                    model.fit(X[tr], y[tr])
+            else:
+                model.fit(X[tr], y[tr])
             yhat_tr = _safe_predict(model, X[tr])
             yhat_va = _safe_predict(model, X[va])
         except Exception as e:  # noqa: BLE001
@@ -247,6 +269,37 @@ def execute_plan(
         capability_key=capability_key,
     )
 
+    # 6b. Population-prevalence eval (Pillar 7b). The L4 coreset shifts the
+    # class mix; population metrics tell us what the model would deliver on
+    # the original distribution. Cheap (single full-table prediction pass)
+    # and only fired every 10 iters or under env-override to keep iteration
+    # cost bounded. Uses the *last fold's* fitted `model`.
+    metrics_val_with_pop = _strip_nonfinite(metrics_val)
+    do_pop_eval = (
+        os.environ.get("EDA_FORCE_POP_EVAL")
+        or (plan.iteration > 0 and plan.iteration % 10 == 0)
+    )
+    if do_pop_eval and "model" in dir():
+        try:
+            from lib.eval_population import evaluate_at_population
+            sketch_top_interactions = None
+            try:
+                l2 = load_l2(project_dir / load_manifest(project_dir).l2_path)
+                sketch_top_interactions = l2.top_interactions
+            except Exception:  # noqa: BLE001
+                pass
+            pop_metrics = evaluate_at_population(
+                model,
+                plan,
+                mission,
+                project_dir,
+                capability_key,
+                sketch_top_interactions=sketch_top_interactions,
+            )
+            metrics_val_with_pop = {**metrics_val_with_pop, **pop_metrics}
+        except Exception as e:  # noqa: BLE001
+            _log.debug("population eval failed: %s", e)
+
     er = ExperimentResult(
         id=plan.id,
         iteration=plan.iteration,
@@ -259,7 +312,7 @@ def execute_plan(
         area=plan.area,
         metrics=FitMetrics(
             train=_strip_nonfinite(metrics_train),
-            validation=_strip_nonfinite(metrics_val),
+            validation=metrics_val_with_pop,
         ),
         primary_metric=primary_metric,
         primary_metric_value=pm_value,

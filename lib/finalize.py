@@ -50,6 +50,13 @@ _log = logging.getLogger("eda.finalize")
 
 
 def _pick_best(experiments: list[ExperimentResult], direction: str) -> Optional[ExperimentResult]:
+    """Pick the best non-FAIL experiment.
+
+    Prefers population-prevalence metrics (`<primary>_pop`) when at least one
+    experiment carries them — these are the deployment-truth values. Falls
+    back to the coreset primary metric when none of the experiments has a
+    population metric yet (e.g. iter < 10 or no joined parquet).
+    """
     valid = [
         e
         for e in experiments
@@ -57,6 +64,17 @@ def _pick_best(experiments: list[ExperimentResult], direction: str) -> Optional[
     ]
     if not valid:
         return None
+
+    def _pop_value(e: ExperimentResult) -> Optional[float]:
+        v = (e.metrics.validation or {}).get(f"{e.primary_metric}_pop")
+        return float(v) if v is not None else None
+
+    pop_pool = [e for e in valid if _pop_value(e) is not None]
+    if pop_pool:
+        if direction == ">=":
+            return max(pop_pool, key=lambda e: _pop_value(e) or float("-inf"))
+        return min(pop_pool, key=lambda e: _pop_value(e) or float("inf"))
+
     if direction == ">=":
         return max(valid, key=lambda e: e.primary_metric_value)  # type: ignore[arg-type,return-value]
     return min(valid, key=lambda e: e.primary_metric_value)  # type: ignore[arg-type,return-value]
@@ -413,9 +431,102 @@ def build_knowledge_bundle(
     return bundle
 
 
-def finalize(project_dir: Path, mission: Mission, *, workspace: Optional[Path] = None) -> dict[str, Any]:
-    """End-to-end finalize: build recommendation + write FINAL.md + knowledge bundle."""
+def _should_block_finalize(
+    project_dir: Path,
+    mission: Mission,
+    rec: "Recommendation",
+) -> dict[str, Any]:
+    """Decide whether finalize should refuse to write FINAL.md and instead
+    request re-entry into the iteration loop.
+
+    Blocks when ALL of:
+      - tier == "low" (operational threshold not met)
+      - operational_floor is set AND best_metric is on the wrong side
+      - token budget is not exhausted
+      - iteration cap is not exhausted
+      - breakthrough_entry_count < breakthrough_max_entries
+
+    Returns a dict with `block` (bool) and the values the orchestrator
+    needs to record the decision.
+    """
+    import math
+    from lib.budget import fraction_consumed
+    from lib.state import load_run_state
+
+    info: dict[str, Any] = {
+        "block": False,
+        "reason": "",
+        "best_metric": None,
+        "operational_floor": mission.budget.operational_floor,
+        "breakthrough_entry_count": 0,
+    }
+    state = load_run_state(project_dir)
+    info["breakthrough_entry_count"] = state.breakthrough_entry_count
+
+    if rec.confidence_tier != "low":
+        return info  # tier already medium/high or no_signal — no point looping further
+
+    floor = mission.budget.operational_floor
+    if floor is None:
+        return info  # no operational floor declared → respect default behavior
+
+    bv = state.best_primary_metric_value
+    if math.isfinite(bv):
+        info["best_metric"] = float(bv)
+    direction = mission.success_criterion.direction
+    on_wrong_side = (
+        (math.isfinite(bv) and bv < floor)
+        if direction == ">="
+        else (math.isfinite(bv) and bv > floor)
+    )
+    if not on_wrong_side:
+        return info  # already past the operational floor; just hadn't hit the threshold
+
+    frac = fraction_consumed(project_dir, mission.budget.token_cap)
+    if frac >= 1.0:
+        info["reason"] = "budget_exhausted"
+        return info  # don't block — finalize honestly
+    if state.current_iteration >= mission.budget.iteration_cap:
+        info["reason"] = "iteration_cap"
+        return info
+    if state.breakthrough_entry_count >= mission.budget.breakthrough_max_entries:
+        info["reason"] = "breakthrough_max_entries_reached"
+        return info
+
+    info["block"] = True
+    info["reason"] = "below_operational_floor_with_budget_remaining"
+    return info
+
+
+def finalize(
+    project_dir: Path,
+    mission: Mission,
+    *,
+    workspace: Optional[Path] = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """End-to-end finalize: build recommendation + write FINAL.md + knowledge bundle.
+
+    Pillar 10 — when the chosen best is `confidence_tier="low"` AND
+    budget remains AND the operational_floor is unmet AND breakthrough mode
+    has not exhausted its re-entry budget, *do not* finalize. Return
+    `{requested_re_enter_loop: True, reason: ...}` so the orchestrator can
+    re-enter Phase B with breakthrough mode active for another window.
+    `force=True` bypasses this gate (used by `/contribute` and after the
+    secondary stagnation window has closed).
+    """
     rec = build_recommendation(project_dir, mission)
+    if not force:
+        signal = _should_block_finalize(project_dir, mission, rec)
+        if signal["block"]:
+            return {
+                "requested_re_enter_loop": True,
+                "reason": signal["reason"],
+                "confidence_tier": rec.confidence_tier,
+                "best_metric": signal["best_metric"],
+                "operational_floor": signal["operational_floor"],
+                "breakthrough_entry_count": signal["breakthrough_entry_count"],
+            }
     final_path = write_final(project_dir, rec)
     bundle = build_knowledge_bundle(project_dir, mission, rec)
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,33 @@ _TARGET_HINTS = (
     "is_",
     "_flag",
 )
-_ID_HINTS = ("id", "uuid", "key", "code")
+# Generic identifier-name detection. Designed to catch id-shaped columns
+# across domains (manufacturing, retail, finance, healthcare, …) without
+# leaking domain-specific vocabulary. Detection runs on a tokenized form of
+# the name so snake_case, kebab-case, "Spaced Names", and CamelCase all work
+# (e.g. `SerialNumber` → tokens [`serial`, `number`]).
+_ID_TOKENS: frozenset[str] = frozenset(
+    {"id", "uuid", "key", "code", "serial", "idx", "index", "lot", "batch", "sku", "hash", "token"}
+)
+# Compound suffix / numeric-tail patterns that the tokenizer can't catch on
+# its own. Matched case-insensitively against the raw name.
+_ID_COMPOUND_PATTERNS: tuple[str, ...] = (
+    r"_run_idx$",
+    r"^.*_[0-9]{6,}$",
+)
+_ID_COMPOUND_RX = tuple(re.compile(p, flags=re.IGNORECASE) for p in _ID_COMPOUND_PATTERNS)
+# Legacy alias retained so any external import keeps working.
+_ID_HINTS = tuple(sorted(_ID_TOKENS))
+
+
+def _tokenize_column_name(name: str) -> list[str]:
+    """Lowercase token list, splitting on underscore, hyphen, whitespace, and
+    camelCase boundaries. Used by both `_matches_id_pattern` and the join
+    proposer."""
+    # Insert separator at lowercase/digit → Uppercase boundary.
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    s = re.sub(r"[\s\-]+", "_", s).lower()
+    return [tok for tok in s.split("_") if tok]
 
 
 def _read_file(path: Path) -> pd.DataFrame:
@@ -123,14 +150,27 @@ def _is_likely(name: str, hints: tuple[str, ...]) -> bool:
     return any(h in nl for h in hints)
 
 
+def _matches_id_pattern(name: str) -> bool:
+    """Return True if `name` looks like a generic identifier (id/uuid/serial/
+    idx/index/lot/batch/sku/hash/token/key/code/digit-suffix). Tokenizes the
+    name to handle snake_case, kebab-case, spaces, and camelCase uniformly."""
+    if any(rx.search(name) for rx in _ID_COMPOUND_RX):
+        return True
+    return any(tok in _ID_TOKENS for tok in _tokenize_column_name(name))
+
+
 def _infer_likely_columns(cols: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Group columns into likely-time / likely-target / likely-id buckets."""
     likely_time = [c["name"] for c in cols if c["dtype"] == "datetime" or _is_likely(c["name"], _TIME_HINTS)]
     likely_target = [c["name"] for c in cols if _is_likely(c["name"], _TARGET_HINTS)]
+    # Identifier detection: name pattern AND high cardinality (≥95% unique).
+    # The 95% threshold catches near-unique identifiers without requiring
+    # perfect uniqueness, which can be broken by NULL handling or duplicates.
     likely_id = [
         c["name"]
         for c in cols
-        if _is_likely(c["name"], _ID_HINTS) and c["n_unique"] >= max(1, c["n_rows"] - 10)
+        if _matches_id_pattern(c["name"])
+        and c["n_unique"] >= max(1, int(0.95 * c["n_rows"]))
     ]
     return {
         "likely_time": likely_time,
@@ -149,7 +189,7 @@ def _propose_joins(file_summaries: list[dict[str, Any]]) -> list[dict[str, Any]]
             cols_a = {c["name"] for c in a["columns"]}
             cols_b = {c["name"] for c in b["columns"]}
             shared = sorted(cols_a & cols_b)
-            keylike = [c for c in shared if _is_likely(c, _ID_HINTS) or _is_likely(c, _TIME_HINTS)]
+            keylike = [c for c in shared if _matches_id_pattern(c) or _is_likely(c, _TIME_HINTS)]
             if not keylike:
                 continue
             proposals.append(

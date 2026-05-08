@@ -6,13 +6,28 @@ updates `COURSE.md`, and adds reviewer-authored sketch annotations.
 
 The reviewer role (Opus, vision-enabled) consumes this scaffold. The
 scaffold is constructed deterministically here; the reviewer adds prose.
+
+Pillar 9 — reviewer prose binds the next batch. The reviewer SKILL/agent
+must include a "What to try next" section. Each bullet there parses into
+a `source="reviewer_directive"` hypothesis that gets first-class priority
+in the next call to `lib.generate_hypotheses.generate(...)`.
+
+Parseable forms (agreed with the reviewer agent):
+
+    - area=<name> family=<name>: rationale...
+    - try: <model_key>: rationale...
+    - try: feature <token>: rationale...
+
+Free-form bullets are persisted with `area="features"` and the bullet
+text as `rationale` so reviewer prose is never silently dropped.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from lib.capabilities import validate_composition
 from lib.schemas.experiment import ExperimentResult
@@ -157,6 +172,13 @@ def write_synthesis(
                 author_role="reviewer",
             ),
         )
+        # Pillar 9: parse "What to try next" bullets into reviewer directives
+        # so the next iteration's researcher gets explicit, prioritized,
+        # parseable next-step hypotheses.
+        try:
+            parse_and_persist_reviewer_notes(project_dir, iteration, reviewer_notes)
+        except Exception as e:  # noqa: BLE001 — never fail synthesis on directive parsing
+            _log.debug("reviewer-directive parsing failed: %s", e)
     return p
 
 
@@ -169,3 +191,212 @@ def append_to_course(project_dir: Path, line: str) -> Path:
     with p.open("a", encoding="utf-8") as f:
         f.write(f"- {line.strip()}\n")
     return p
+
+
+# --- Reviewer-directive parser (Pillar 9) -------------------------------
+
+
+_NEXT_HEADER_RX = re.compile(
+    r"^\s*##+\s*(what\s+to\s+try\s+next|next\s+steps|recommended\s+next\s+moves)\b",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_BULLET_RX = re.compile(r"^\s*[-*+]\s+(.*)$")
+_AREA_FAMILY_RX = re.compile(
+    r"area\s*=\s*([a-z_]+)\s+family\s*=\s*([a-z_]+)\s*[:\-]?\s*(.*)$",
+    flags=re.IGNORECASE,
+)
+_TRY_MODEL_RX = re.compile(
+    r"^try\s*:\s*([a-z_][a-z0-9_]*)\s*[:\-]?\s*(.*)$",
+    flags=re.IGNORECASE,
+)
+_TRY_FEATURE_RX = re.compile(
+    r"^try\s*:\s*feature\s+([\w:+]+)\s*[:\-]?\s*(.*)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _extract_next_section(prose: str) -> str:
+    """Pull the body of the 'What to try next' section. Returns '' if not found."""
+    m = _NEXT_HEADER_RX.search(prose)
+    if not m:
+        return ""
+    rest = prose[m.end():]
+    # Stop at the next markdown header.
+    next_h = re.search(r"^\s*##+\s+", rest, flags=re.MULTILINE)
+    if next_h:
+        return rest[: next_h.start()]
+    return rest
+
+
+def _parse_directive_bullets(section_body: str) -> list[dict[str, Any]]:
+    """Tokenize bullet lines into structured directives. Each returned dict
+    has at least: `area`, `family` (or None), `model_hint`, `features_dsl`,
+    `rationale`."""
+    out: list[dict[str, Any]] = []
+    for line in section_body.splitlines():
+        m = _BULLET_RX.match(line)
+        if not m:
+            continue
+        body = m.group(1).strip()
+        if not body:
+            continue
+        # try: feature <token>
+        mf = _TRY_FEATURE_RX.match(body)
+        if mf:
+            tok, rest = mf.group(1).strip(), mf.group(2).strip()
+            # The greedy `[\w:+]+` captures trailing `:` used as a rationale
+            # separator (e.g. "engineered:cyclic: hour-based..."). Strip it.
+            tok = tok.rstrip(":")
+            out.append(
+                {
+                    "kind": "feature",
+                    "area": "features",
+                    "family": None,
+                    "model_hint": "lgbm_default",
+                    "features_dsl": ["+all_allowed", tok],
+                    "rationale": rest or body,
+                }
+            )
+            continue
+        # try: <model_key>
+        mm = _TRY_MODEL_RX.match(body)
+        if mm:
+            model_key, rest = mm.group(1).strip(), mm.group(2).strip()
+            out.append(
+                {
+                    "kind": "model",
+                    "area": "baseline",
+                    "family": None,
+                    "model_hint": model_key,
+                    "features_dsl": ["+all_allowed"],
+                    "rationale": rest or body,
+                }
+            )
+            continue
+        # area=X family=Y
+        ma = _AREA_FAMILY_RX.search(body)
+        if ma:
+            area, family, rest = ma.group(1).strip().lower(), ma.group(2).strip().lower(), ma.group(3).strip()
+            out.append(
+                {
+                    "kind": "area_family",
+                    "area": area,
+                    "family": family,
+                    "model_hint": "lgbm_default",
+                    "features_dsl": ["+all_allowed"],
+                    "rationale": rest or body,
+                }
+            )
+            continue
+        # Free-form: keep so reviewer prose is never silently dropped.
+        out.append(
+            {
+                "kind": "free",
+                "area": "features",
+                "family": None,
+                "model_hint": "lgbm_default",
+                "features_dsl": ["+all_allowed"],
+                "rationale": body,
+            }
+        )
+    return out
+
+
+def _persist_reviewer_directives(
+    project_dir: Path,
+    iteration: int,
+    parsed: list[dict[str, Any]],
+) -> Path:
+    """Append reviewer directives to memory/HYPOTHESES.jsonl with
+    `source="reviewer_directive"`. The generator picks them up first on
+    the next iteration and marks them `consumed=True` after selection."""
+    p = Path(project_dir) / "memory" / "HYPOTHESES.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for i, d in enumerate(parsed):
+        family = d.get("family")
+        if family is None:
+            # Sensible default by area; researcher can refine.
+            family = {
+                "interactions": "boosted_tree",
+                "regimes": "tree",
+                "calibration": "boosted_tree",
+                "robustness": "ensemble",
+                "leakage_probe": "linear",
+                "causal": "linear",
+                "ensembling": "ensemble",
+                "features": "boosted_tree",
+                "baseline": "boosted_tree",
+            }.get(d.get("area", "features"), "boosted_tree")
+        rows.append(
+            {
+                "hypothesis_id": f"H-iter{iteration}-reviewer-{i}",
+                "name": f"reviewer_directive_iter{iteration}_{i}",
+                "summary": d.get("rationale", "")[:400],
+                "technique_family": family,
+                "area": d.get("area", "features"),
+                "model_hint": d.get("model_hint", "lgbm_default"),
+                "features_dsl": list(d.get("features_dsl", ["+all_allowed"])),
+                "expected_info_gain": 0.7,
+                "rationale": d.get("rationale", "Reviewer directive."),
+                "source": "reviewer_directive",
+                "kind": d.get("kind"),
+                "iteration_emitted": int(iteration),
+                "consumed": False,
+            }
+        )
+    with p.open("a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    return p
+
+
+def parse_and_persist_reviewer_notes(
+    project_dir: Path,
+    iteration: int,
+    reviewer_notes: str,
+) -> list[dict[str, Any]]:
+    """Public entry-point used by `write_synthesis(...)`. Returns the list
+    of directives written (possibly empty)."""
+    if not reviewer_notes:
+        return []
+    section = _extract_next_section(reviewer_notes)
+    if not section:
+        return []
+    parsed = _parse_directive_bullets(section)
+    if not parsed:
+        return []
+    _persist_reviewer_directives(project_dir, iteration, parsed)
+    return parsed
+
+
+def mark_directive_consumed(project_dir: Path, hypothesis_id: str) -> bool:
+    """Flag a reviewer-directive hypothesis as consumed so it isn't picked
+    twice. Rewrites HYPOTHESES.jsonl atomically. Returns True if a row was
+    flagged."""
+    p = Path(project_dir) / "memory" / "HYPOTHESES.jsonl"
+    if not p.exists():
+        return False
+    rows: list[dict[str, Any]] = []
+    changed = False
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            r.get("source") == "reviewer_directive"
+            and r.get("hypothesis_id") == hypothesis_id
+            and not r.get("consumed")
+        ):
+            r["consumed"] = True
+            changed = True
+        rows.append(r)
+    if changed:
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    return changed

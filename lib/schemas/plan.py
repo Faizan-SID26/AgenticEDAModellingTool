@@ -3,14 +3,35 @@
 The researcher emits one of these per iteration. Step 3 of the loop
 (`lib.run`) consumes it. `prior_evidence` is mandatory; without it the plan
 is rejected so the agent cannot run experiments unmoored from the sketch.
+
+The orchestrator passes `validation_context` into `PlanDict.model_validate`:
+
+    PlanDict.model_validate(
+        plan_payload,
+        context={
+            "recent_fingerprints": [...],   # last `window` doomed fingerprints
+            "breakthrough_mode_active": True,
+        },
+    )
+
+When `breakthrough_mode_active` is True, the validator requires
+`prior_evidence.kind == "domain_prior"` and a URL-/arxiv-/doi-shaped
+`reference`. When `recent_fingerprints` is non-empty, the validator rejects
+plans whose own fingerprint matches any of them (this is how the
+disk-backed doom-loop forces structural diversification).
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any, Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from lib.schemas._base import VersionedModel
+
+
+_DOMAIN_PRIOR_REF_RX = re.compile(r"^(https?://|arxiv:|doi:)", flags=re.IGNORECASE)
 
 TechniqueFamily = Literal[
     "linear",
@@ -73,6 +94,21 @@ class PriorEvidence(VersionedModel):
         ...,
         max_length=400,
         description="One-sentence summary of what the source says, in the agent's words.",
+    )
+    technique_summary: Optional[str] = Field(
+        default=None,
+        max_length=600,
+        description=(
+            "When kind == 'domain_prior' and the source is a paper, a short "
+            "implementable summary of the technique to fold into params/features. "
+            "Optional outside breakthrough mode."
+        ),
+    )
+    paper_year: Optional[int] = Field(
+        default=None,
+        ge=1900,
+        le=2100,
+        description="Publication year if the prior is a paper. Optional.",
     )
 
 
@@ -169,6 +205,57 @@ class PlanDict(VersionedModel):
         if any(not tok.strip() for tok in v):
             raise ValueError("features must not contain empty/whitespace tokens")
         return v
+
+    def fingerprint(self) -> str:
+        """Stable fingerprint of `(model, technique_family, area, sorted(features))`.
+        Used by the doom-loop check and the breakthrough-mode validator. Defined
+        on the model so the schema is the single source of truth for what
+        counts as a "structurally identical" plan."""
+        payload = "|".join(
+            [self.model, self.technique_family, self.area, ",".join(sorted(self.features))]
+        ).encode("utf-8")
+        return hashlib.sha1(payload).hexdigest()[:10]
+
+    @model_validator(mode="after")
+    def _enforce_context_rules(self, info):  # type: ignore[no-untyped-def]
+        """Context-aware rules. The orchestrator passes context via
+        `PlanDict.model_validate(..., context={...})`. Two rules:
+
+        1) Anti-doom: when `recent_fingerprints` is non-empty, reject plans
+           whose fingerprint matches any of them.
+        2) Breakthrough grounding: when `breakthrough_mode_active==True`,
+           require `prior_evidence.kind == "domain_prior"` and a URL-/arxiv-
+           /doi-shaped reference.
+
+        When neither key is present in context (the common case for cold-start
+        and warm iterations outside breakthrough mode), this validator is a
+        no-op.
+        """
+        ctx = getattr(info, "context", None) or {}
+        if not ctx:
+            return self
+        recent = ctx.get("recent_fingerprints") or []
+        if recent:
+            fp = self.fingerprint()
+            if fp in list(recent):
+                raise ValueError(
+                    f"plan fingerprint {fp!r} matches a recent doomed plan; "
+                    "doom-loop active — pick a structurally different plan "
+                    "(different model OR technique_family OR area OR features)."
+                )
+        if ctx.get("breakthrough_mode_active"):
+            ev = self.prior_evidence
+            if ev.kind != "domain_prior":
+                raise ValueError(
+                    "breakthrough mode requires prior_evidence.kind == 'domain_prior' "
+                    f"(got {ev.kind!r}). Ground the plan in a paper or domain prior."
+                )
+            if not _DOMAIN_PRIOR_REF_RX.match(ev.reference):
+                raise ValueError(
+                    "breakthrough mode requires prior_evidence.reference to be a URL, "
+                    f"arxiv: id, or doi: id (got {ev.reference!r})."
+                )
+        return self
 
 
 __all__ = ["PlanDict", "PriorEvidence", "TechniqueFamily", "Area"]

@@ -51,6 +51,11 @@ class RunState:
     iterations_since_improvement: int = 0
     last_regime_split_iteration: int = -100
     notes: str = ""
+    # Breakthrough mode (Pillar 1). Default-False values keep legacy state files compatible.
+    breakthrough_mode_active: bool = False
+    iterations_in_breakthrough: int = 0
+    breakthrough_started_at_iteration: Optional[int] = None
+    breakthrough_entry_count: int = 0
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -65,6 +70,9 @@ class RunState:
         v = d.get("best_primary_metric_value")
         if v is None:
             d["best_primary_metric_value"] = float("-inf")
+        # Drop unknown keys so older or newer state files don't blow up the constructor.
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        d = {k: v for k, v in d.items() if k in known}
         return cls(**d)
 
 
@@ -135,6 +143,11 @@ class IterationBrief:
     budget_fraction_consumed: float
     suggested_sketch_queries: list[str]
     termination_imminent: bool
+    # Breakthrough-mode signals (Pillar 1). Capability-agnostic.
+    breakthrough_mode_active: bool = False
+    iterations_in_breakthrough: int = 0
+    operational_floor: Optional[float] = None
+    below_floor: bool = False
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -180,19 +193,35 @@ def next(project_dir: Path, mission: Mission) -> IterationBrief:
     ]
     cap = mission.budget.token_cap
     frac = fraction_consumed(project_dir, cap)
+    # Inside breakthrough mode the relevant stagnation window is the
+    # secondary one; outside it's the primary. Either way, "imminent" is
+    # within one iteration of that window.
+    if state.breakthrough_mode_active:
+        active_window = mission.budget.breakthrough_stagnation_window
+        active_progress = state.iterations_in_breakthrough
+    else:
+        active_window = mission.budget.stagnation_window
+        active_progress = state.iterations_since_improvement
     termination_close = (
         frac >= 0.85
-        or state.iterations_since_improvement >= mission.budget.stagnation_window - 1
+        or active_progress >= active_window - 1
         or state.current_iteration >= mission.budget.iteration_cap - 1
     )
+    floor = mission.budget.operational_floor
+    bv = state.best_primary_metric_value
+    direction = mission.success_criterion.direction
+    if floor is None or not math.isfinite(bv):
+        below_floor = False
+    else:
+        below_floor = (bv < floor) if direction == ">=" else (bv > floor)
     return IterationBrief(
         iteration=state.current_iteration + 1,
         capability_signature=composition_signature(mission.capability),
         primary_metric=mission.success_criterion.metric,
-        direction=mission.success_criterion.direction,
+        direction=direction,
         success_threshold=mission.success_criterion.threshold,
         on_split=mission.success_criterion.on_split,
-        best_so_far=(state.best_primary_metric_value if math.isfinite(state.best_primary_metric_value) else None),
+        best_so_far=(bv if math.isfinite(bv) else None),
         best_iteration=state.best_iteration,
         iterations_since_improvement=state.iterations_since_improvement,
         last_three_experiments=last_three_dicts,
@@ -200,6 +229,10 @@ def next(project_dir: Path, mission: Mission) -> IterationBrief:
         budget_fraction_consumed=frac,
         suggested_sketch_queries=_suggested_queries_for(cap_key),
         termination_imminent=termination_close,
+        breakthrough_mode_active=state.breakthrough_mode_active,
+        iterations_in_breakthrough=state.iterations_in_breakthrough,
+        operational_floor=floor,
+        below_floor=below_floor,
     )
 
 
@@ -220,8 +253,14 @@ def record(
     experiment: ExperimentResult,
     *,
     tokens: Optional[dict[str, int]] = None,
+    plan: Optional[PlanDict] = None,
 ) -> dict[str, Any]:
-    """Step 4 of the loop: append + update sketch + update bandit + log budget."""
+    """Step 4 of the loop: append + update sketch + update bandit + log budget.
+
+    `plan` is optional and only used to record the plan fingerprint to
+    `memory/RECENT_PLANS.jsonl` for the disk-backed doom-loop check. When
+    not provided, fingerprinting is skipped (back-compat for callers that
+    don't have the plan dict on hand)."""
     project_dir = Path(project_dir)
     state = load_run_state(project_dir)
     direction = mission.success_criterion.direction
@@ -238,11 +277,29 @@ def record(
         state.best_primary_metric_value = cur
         state.best_iteration = int(experiment.iteration)
         state.iterations_since_improvement = 0
+        # Improvement also resets the breakthrough secondary window: the
+        # framework just demonstrated escape velocity, give it room.
+        if state.breakthrough_mode_active:
+            state.iterations_in_breakthrough = 0
     else:
         experiment.info_gain_actual = 0.0
         state.iterations_since_improvement += 1
+        if state.breakthrough_mode_active:
+            state.iterations_in_breakthrough += 1
 
     append_experiment(project_dir, experiment)
+    # Persist the plan fingerprint so the disk-backed doom-loop check has a
+    # trailing window to read on the next iteration.
+    if plan is not None:
+        try:
+            from lib.anti_doom import append_fingerprint, fingerprint_of
+            append_fingerprint(
+                project_dir,
+                fingerprint_of(plan),
+                iteration=int(experiment.iteration),
+            )
+        except Exception as e:  # noqa: BLE001 — never fail iteration on this
+            _log.debug("anti-doom fingerprint persistence failed: %s", e)
 
     # Update sketch deterministically.
     sketch_changes = update_after_experiment(
@@ -307,41 +364,82 @@ def termination_check(project_dir: Path, mission: Mission) -> TerminationVerdict
     `_MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION` distinct technique
     families: 'we tried 3 boosted-tree configs and gave up' is not a
     valid project end state.
+
+    Stagnation is also suppressed when the best primary metric is below
+    the user's `operational_floor`: if the framework has not yet produced
+    an operationally useful result, "no further improvement on this search
+    direction" is not a license to stop. Instead the framework enters
+    breakthrough mode (a side effect of this call when triggered) so the
+    orchestrator can escalate registry, DSL, and paper grounding.
+
+    Goal-met / budget-exhausted / iteration-cap / catastrophic-skeptic
+    halt unconditionally — they are always honest stop conditions.
     """
+    project_dir = Path(project_dir)
     state = load_run_state(project_dir)
     reasons: list[str] = []
     exps = read_experiments(project_dir)
+    sc = mission.success_criterion
+    direction = sc.direction
+    bv = state.best_primary_metric_value
+    floor = mission.budget.operational_floor
+
+    # Helper: direction-aware "below the floor".
+    def _below_floor(metric_value: float) -> bool:
+        if floor is None or not math.isfinite(metric_value):
+            return False
+        return (metric_value < floor) if direction == ">=" else (metric_value > floor)
 
     # Goal met.
-    sc = mission.success_criterion
-    bv = state.best_primary_metric_value
     if math.isfinite(bv):
-        ok = (bv >= sc.threshold) if sc.direction == ">=" else (bv <= sc.threshold)
+        ok = (bv >= sc.threshold) if direction == ">=" else (bv <= sc.threshold)
         if ok:
             reasons.append("goal_met")
 
-    # Budget.
+    # Budget — unconditional halt.
     frac = fraction_consumed(project_dir, mission.budget.token_cap)
     if frac >= 1.0:
         reasons.append("budget_exhausted")
 
-    # Stagnation — only fires if we've actually explored.
-    if state.iterations_since_improvement >= mission.budget.stagnation_window:
-        distinct_families = {
-            e.technique_family for e in exps if e.skeptic.verdict != "FAIL"
-        }
-        if len(distinct_families) >= _MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION:
-            reasons.append("stagnation")
-        else:
-            # Otherwise, this is *premature* stagnation. Don't halt.
-            # The orchestrator should escalate to wildcard / SOTA hypotheses.
+    # Stagnation — direction-aware on operational_floor; primary vs
+    # secondary window depending on whether breakthrough mode is active.
+    in_breakthrough = state.breakthrough_mode_active
+    if in_breakthrough:
+        # Already in breakthrough — only the secondary window halts.
+        if state.iterations_in_breakthrough >= mission.budget.breakthrough_stagnation_window:
+            distinct_families = {e.technique_family for e in exps if e.skeptic.verdict != "FAIL"}
+            if len(distinct_families) >= _MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION:
+                reasons.append("breakthrough_stagnation")
+    elif state.iterations_since_improvement >= mission.budget.stagnation_window:
+        distinct_families = {e.technique_family for e in exps if e.skeptic.verdict != "FAIL"}
+        if len(distinct_families) < _MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION:
+            # Premature stagnation: too narrow an exploration. Don't halt.
             _log.info(
                 "stagnation suppressed: only %d distinct families tried (min %d required)",
                 len(distinct_families),
                 _MIN_DISTINCT_FAMILIES_BEFORE_STAGNATION,
             )
+        elif _below_floor(bv) and state.breakthrough_entry_count < mission.budget.breakthrough_max_entries:
+            # Below operational floor — escalate into breakthrough mode rather than halt.
+            state.breakthrough_mode_active = True
+            state.breakthrough_started_at_iteration = state.current_iteration
+            state.iterations_in_breakthrough = 0
+            state.breakthrough_entry_count += 1
+            save_run_state(project_dir, state)
+            _record_breakthrough_event(
+                project_dir,
+                event="enter",
+                iteration=state.current_iteration,
+                reason="stagnation_below_operational_floor",
+                best_metric=bv if math.isfinite(bv) else None,
+                operational_floor=floor,
+                entry_count=state.breakthrough_entry_count,
+            )
+            reasons.append("escalation_required")
+        else:
+            reasons.append("stagnation")
 
-    # Iteration cap.
+    # Iteration cap — unconditional halt.
     if state.current_iteration >= mission.budget.iteration_cap:
         reasons.append("iteration_cap")
 
@@ -356,4 +454,34 @@ def termination_check(project_dir: Path, mission: Mission) -> TerminationVerdict
             if shared:
                 reasons.append(f"catastrophic_skeptic:{sorted(shared)}")
 
-    return TerminationVerdict(halt=bool(reasons), reasons=reasons)
+    # `escalation_required` is a non-halting reason: it tells the orchestrator
+    # to enter breakthrough mode but keep iterating. Halt only when at least
+    # one halting reason is present.
+    halting = [r for r in reasons if r != "escalation_required"]
+    return TerminationVerdict(halt=bool(halting), reasons=reasons)
+
+
+def _record_breakthrough_event(
+    project_dir: Path,
+    *,
+    event: str,
+    iteration: int,
+    reason: str,
+    best_metric: Optional[float],
+    operational_floor: Optional[float],
+    entry_count: int,
+) -> Path:
+    """Append-only ledger of breakthrough-mode entries / exits."""
+    p = Path(project_dir) / "results" / "breakthrough_attempts.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "event": event,
+        "iteration": int(iteration),
+        "reason": reason,
+        "best_metric": best_metric,
+        "operational_floor": operational_floor,
+        "entry_count": int(entry_count),
+    }
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    return p
